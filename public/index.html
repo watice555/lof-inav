@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LOF iNAV</title>
+    <link rel="stylesheet" href="/styles.css?v=20260514-premium-threshold" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>LOF iNAV</h1>
+          <p>跨市场 LOF 估值实验台</p>
+        </div>
+        <div class="status">
+          <span id="refreshState">等待刷新</span>
+          <button id="exportCsvBtn" type="button">导出CSV</button>
+          <button id="exportPngBtn" type="button">导出PNG</button>
+          <button id="refreshBtn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section id="dataAlerts" class="data-alerts" hidden></section>
+
+      <section class="filters" aria-label="筛选">
+        <div class="filter-header">
+          <div>
+            <h2>类型筛选</h2>
+            <p id="typeFilterSummary">默认显示全部类型</p>
+          </div>
+          <div class="filter-actions">
+            <button id="selectAllTypesBtn" type="button">全选</button>
+            <button id="clearAllTypesBtn" type="button">全不选</button>
+          </div>
+        </div>
+        <div id="typeFilters" class="type-filters"></div>
+        <div class="filter-divider"></div>
+        <div class="limit-filter-row">
+          <div>
+            <h2>申购限额</h2>
+            <p id="purchaseLimitFilterSummary">默认显示全部申购状态</p>
+          </div>
+          <div class="segmented-control" role="group" aria-label="申购限额筛选">
+            <button id="showAllPurchaseLimitsBtn" class="segment-button" type="button" aria-pressed="true">全展示</button>
+            <button id="hidePausedPurchaseBtn" class="segment-button" type="button" aria-pressed="false">屏蔽暂停申购</button>
+          </div>
+        </div>
+        <div class="filter-divider"></div>
+        <div class="premium-filter-row">
+          <div>
+            <h2>折溢价率</h2>
+            <p id="premiumFilterSummary">默认显示全部折溢价</p>
+          </div>
+          <div class="premium-filter-controls">
+            <div class="premium-thresholds" aria-label="折溢价率阈值">
+              <label class="threshold-field">
+                <span>溢价 &gt;</span>
+                <input id="premiumAboveInput" type="number" min="0" step="0.1" value="1" inputmode="decimal" />
+                <span>%</span>
+              </label>
+              <label class="threshold-field">
+                <span>折价 &lt; -</span>
+                <input id="discountBelowInput" type="number" min="0" step="0.1" value="1" inputmode="decimal" />
+                <span>%</span>
+              </label>
+            </div>
+            <div class="segmented-control" role="group" aria-label="折溢价率筛选">
+              <button id="showAllPremiumsBtn" class="segment-button" type="button" aria-pressed="true">全展示</button>
+              <button id="showPremiumAboveBtn" class="segment-button" type="button" aria-pressed="false">按溢价筛选</button>
+              <button id="showDiscountBelowBtn" class="segment-button" type="button" aria-pressed="false">按折价筛选</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="table-wrap">
+        <table>
+          <colgroup>
+            <col class="fund-col-name" />
+            <col class="fund-col-type" />
+            <col class="fund-col-announcement" />
+            <col class="fund-col-limit" />
+            <col class="fund-col-nav" />
+            <col class="fund-col-price" />
+            <col class="fund-col-estimate" />
+            <col class="fund-col-premium" />
+            <col class="fund-col-covered" />
+            <col class="fund-col-backtest" />
+            <col class="fund-col-backtest-vol" />
+            <col class="fund-col-note" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-sort-key="fund" aria-sort="none"><button class="sort-button" type="button">基金</button></th>
+              <th data-sort-key="type" aria-sort="none"><button class="sort-button" type="button">类型</button></th>
+              <th data-sort-key="announcement" aria-sort="none"><button class="sort-button" type="button">公告</button></th>
+              <th data-sort-key="purchase_limit" aria-sort="none"><button class="sort-button" type="button">申购限额</button></th>
+              <th data-sort-key="previous_nav" aria-sort="none"><button class="sort-button" type="button">上一日净值</button></th>
+              <th data-sort-key="trade_price" aria-sort="none"><button class="sort-button" type="button">场内价格</button></th>
+              <th data-sort-key="estimated_nav" aria-sort="none"><button class="sort-button" type="button">系统估值</button></th>
+              <th data-sort-key="premium" aria-sort="none"><button class="sort-button" type="button">折溢价率</button></th>
+              <th data-sort-key="covered_weight" aria-sort="none"><button class="sort-button" type="button">覆盖仓位</button></th>
+              <th data-sort-key="backtest_mae" aria-sort="none"><button class="sort-button" type="button">回测 MAE</button></th>
+              <th data-sort-key="backtest_mae_vol" aria-sort="none"><button class="sort-button" type="button">MAE/波动</button></th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody id="fundRows"></tbody>
+        </table>
+      </section>
+
+      <section class="detail-grid">
+        <div class="panel">
+          <h2>持仓/代理资产</h2>
+          <div id="holdings" class="muted">选择基金查看</div>
+        </div>
+        <div class="panel">
+          <h2>最近回测</h2>
+          <div id="backtest" class="muted">选择基金查看</div>
+        </div>
+      </section>
+
+      <section class="disclaimer" aria-label="免责声明">
+        <h2>免责声明</h2>
+        <p>
+          本页面为研究和参考工具，基于公开信息、第三方行情数据及自定义估值规则自动计算，数据可能存在延迟、缺失或错误。页面展示的系统估值、折溢价率、回测结果等不代表基金实时净值、官方 IOPV 或未来表现，也不构成任何投资建议、收益承诺或买卖、申购、赎回基金份额的依据。基金投资有风险，投资决策应以基金合同、招募说明书、定期报告及基金管理人公告等正式文件为准，并由使用者自行判断和承担风险。
+        </p>
+      </section>
+    </main>
+    <script src="/app.js?v=20260514-premium-threshold"></script>
+  </body>
+</html>
