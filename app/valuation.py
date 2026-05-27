@@ -155,7 +155,7 @@ def _positive_float(value: Any) -> float | None:
     return None
 
 
-def run_backtest(con: sqlite3.Connection, code: str, days: int = 120, lag_days: int = 25) -> list[dict[str, Any]]:
+def run_backtest(con: sqlite3.Connection, code: str, days: int = 30, lag_days: int = 25) -> list[dict[str, Any]]:
     con.execute("delete from backtests where fund_code = ?", (code,))
     navs = con.execute(
         "select * from navs where fund_code = ? order by date asc", (code,)
@@ -437,7 +437,7 @@ def holdings_available_on(
 
 def backtest_summary(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     rows = con.execute(
-        "select * from backtests where fund_code = ? order by date desc limit 120", (code,)
+        "select * from backtests where fund_code = ? order by date desc limit 30", (code,)
     ).fetchall()
     if not rows:
         return {"count": 0}

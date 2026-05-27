@@ -4,17 +4,21 @@ setlocal
 cd /d "%~dp0"
 set "URL=http://127.0.0.1:8000"
 
-where python >nul 2>nul
-if not errorlevel 1 (
-    set "PYTHON=python"
+if exist ".venv\Scripts\python.exe" (
+    set "PYTHON=.venv\Scripts\python.exe"
 ) else (
-    where py >nul 2>nul
+    where python >nul 2>nul
     if not errorlevel 1 (
-        set "PYTHON=py -3"
+        set "PYTHON=python"
     ) else (
-        echo Python was not found. Please install Python or add it to PATH.
-        pause
-        exit /b 1
+        where py >nul 2>nul
+        if not errorlevel 1 (
+            set "PYTHON=py -3"
+        ) else (
+            echo Python was not found. Please install Python or add it to PATH.
+            pause
+            exit /b 1
+        )
     )
 )
 

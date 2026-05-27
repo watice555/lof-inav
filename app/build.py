@@ -29,7 +29,7 @@ from .valuation import (
 )
 
 
-def build_all() -> None:
+def build_all(days: int = 30, update_backtests: bool = True) -> None:
     init_db()
     with connect() as con:
         all_secids: set[str] = set()
@@ -42,10 +42,12 @@ def build_all() -> None:
         all_secids.update(FX_MIDPOINT_SECIDS.values())
         refresh_quotes(con, sorted(all_secids))
         refresh_purchase_limits(con)
-        refresh_daily_prices(con, sorted(all_secids))
-        refresh_mark_prices(con, sorted(all_secids))
-        for code in FUNDS:
-            run_backtest(con, code, days=180)
+        set_meta(con, "backtests_disabled", not update_backtests)
+        if update_backtests:
+            refresh_daily_prices(con, sorted(all_secids))
+            refresh_mark_prices(con, sorted(all_secids))
+            for code in FUNDS:
+                run_backtest(con, code, days=days)
         set_meta(con, "last_build_at", utc_now())
 
 

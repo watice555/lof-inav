@@ -55,35 +55,46 @@ print(Counter(r["market_category"] for r in rows if r["included_in_site"] == "ye
 
 ## 快速开始
 
-本项目是普通 Python 项目，主要在 Windows + PowerShell 下使用。首次运行建议先创建虚拟环境：
+本项目是普通 Python 项目，主要在 Windows 下使用。普通用户建议直接双击 [`quick_start.bat`](quick_start.bat)。它会自动创建 `.venv`、安装依赖、在本地数据库不存在时执行快速构建，然后启动网站并打开浏览器。
+
+如果已经有本地数据库，但想重新抓取当前估值数据，可以在 PowerShell 中运行：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\quick_start.bat --rebuild
 ```
 
-首次使用需要构建本地缓存：
-
-```powershell
-python build.py
-```
-
-`build.py` 会导入 `config/fund_rules.json` 中的全部基金，刷新净值、公告、持仓/代理、行情、申购限额、日线价格和最近 180 条净值回测。基金数量较多，首次运行会比较慢，并且需要访问东方财富、新浪财经和 Yahoo Finance。
-
-构建完成后启动本地网站：
-
-```powershell
-python serve.py
-```
-
-浏览器打开：
+网站地址：
 
 ```text
 http://127.0.0.1:8000
 ```
 
-也可以在依赖已安装后运行 [`start.bat`](start.bat)，它会启动 `serve.py` 并打开浏览器。注意：`start.bat` 不会替你执行首次全量构建。
+`quick_start.bat` 默认使用快速构建，只抓当前估值所需数据，不拉历史日线、不跑回测：
+
+```powershell
+python build.py --current-only
+```
+
+`--current-only` 会导入 `config/fund_rules.json` 中的全部基金，刷新净值、公告、持仓/代理、实时行情、汇率和申购限额。它不会刷新历史日线价格，也不会生成或展示回测数据，适合第一次快速把网页跑起来。
+
+需要回测指标时再运行完整构建：
+
+```powershell
+python build.py
+```
+
+`build.py` 默认生成最近 30 条净值回测。完整构建会刷新历史日线价格和回测用标记价格；基金数量较多，首次完整构建仍然会比较慢，并且需要访问东方财富、新浪财经和 Yahoo Finance。
+
+开发或手工运行时，也可以自己创建虚拟环境并启动服务：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python serve.py
+```
+
+依赖和数据都准备好后，也可以运行 [`start.bat`](start.bat)，它会优先使用 `.venv` 里的 Python，只启动 `serve.py` 并打开浏览器，不会安装依赖或执行构建。
 
 ## 日常命令
 
@@ -91,6 +102,25 @@ http://127.0.0.1:8000
 
 ```powershell
 python build.py
+```
+
+一键快速启动或重建当前估值数据：
+
+```powershell
+.\quick_start.bat
+.\quick_start.bat --rebuild
+```
+
+只刷新当前估值数据，不拉历史日线、不跑回测：
+
+```powershell
+python build.py --current-only
+```
+
+指定回测净值条数：
+
+```powershell
+python build.py --days 30
 ```
 
 刷新单只基金，适合修改规则后验证：
@@ -102,10 +132,11 @@ python import_fund.py 160924
 可选参数：
 
 ```powershell
-python import_fund.py 160924 --days 180 --outliers 5
+python import_fund.py 160924 --days 30 --outliers 5
+python import_fund.py 160924 --current-only
 ```
 
-单只导入会刷新该基金的净值、公告、持仓/代理、相关行情、申购限额、日线价格和回测，并输出：
+单只导入默认会刷新该基金的净值、公告、持仓/代理、相关行情、申购限额、日线价格和回测；加 `--current-only` 时会跳过日线价格和回测。命令会输出：
 
 - 基金名称和规则备注。
 - 回测 MAE、波动、最大误差和最新误差。
@@ -192,14 +223,14 @@ error_pct = estimated_nav / actual_nav - 1
 
 其中 `actual_nav` 已包含当日每份现金分红。`covered_weight` 是当行回测实际参与计算的持仓权重合计；缺少日线、汇率或无法取价的资产不会计入覆盖仓位，也不会贡献收益。
 
-列表页的回测摘要使用最近最多 120 条回测记录：
+列表页的回测摘要使用最近最多 30 条回测记录：
 
 - `回测 MAE`：`abs(error_pct)` 的平均值，即平均绝对误差。
 - `MAE/波动`：`回测 MAE / 净值日收益率标准差`，用于把误差放到基金自身波动里比较。
 - `覆盖仓位`：日内估值里当前最新持仓/代理资产有实时行情并参与计算的权重合计。
 - `最大误差`、`最新误差`、`平均覆盖仓位`：用于判断代理规则是否稳定。
 
-单只基金详情页展示最近 60 条回测明细，包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
+单只基金详情页展示最近 30 条回测明细，包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
 
 ## 规则配置
 
@@ -239,7 +270,7 @@ error_pct = estimated_nav / actual_nav - 1
 
 - `GET /api/funds`：基金列表、估值、折溢价、场内交易 `trade_secid`、公告、申购限额、回测摘要。
 - `GET /api/funds/{code}/holdings`：最新一期持仓/代理资产及对应行情。
-- `GET /api/funds/{code}/backtest`：最近 60 条回测明细。
+- `GET /api/funds/{code}/backtest`：最近 30 条回测明细。
 
 页面功能：
 
@@ -259,7 +290,7 @@ error_pct = estimated_nav / actual_nav - 1
 
 服务端刷新策略：
 
-- 净值缓存为空时同步补齐；之后 `/api/funds` 最多每 15 分钟触发一次后台净值刷新和增量回测。
+- 净值缓存为空时同步补齐；之后 `/api/funds` 最多每 15 分钟触发一次后台净值刷新。完整构建模式会同时做增量回测；`--current-only` 模式会跳过增量回测和对应的数据质量警报。
 - 实时行情缓存为空时同步补齐；之后最多每 60 秒后台刷新一次。
 - 申购限额缓存为空时同步补齐；之后最多每 1 小时后台刷新一次。
 - 列表接口只刷新当前基金场内价格、汇率和最新持仓/代理标的行情；历史持仓标的日线由 `python build.py` 或单只导入增量更新。
@@ -275,6 +306,8 @@ error_pct = estimated_nav / actual_nav - 1
 ## 目录结构
 
 ```text
+quick_start.bat  普通用户一键启动：建环境、装依赖、快速构建并打开网页
+start.bat        已有环境下启动本地网站
 app/
   build.py       数据导入、行情刷新、日线刷新、回测调度
   config.py      配置加载、汇率映射、Yahoo 标记价映射

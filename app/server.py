@@ -70,8 +70,9 @@ class Handler(SimpleHTTPRequestHandler):
             last_incremental_backtests_refresh_at = get_meta(con, "last_incremental_backtests_refresh_at")
             last_quotes_refresh_at = get_meta(con, "last_realtime_quotes_refresh_at")
             last_purchase_limits_refresh_at = get_meta(con, "last_purchase_limits_refresh_at")
+            backtests_disabled = bool(get_meta(con, "backtests_disabled", False))
             if nav_cache_is_empty(con) or not last_navs_refresh_at:
-                refresh_navs(con)
+                refresh_navs(con, update_backtests=not backtests_disabled)
                 last_navs_refresh_at = get_meta(con, "last_navs_refresh_at")
                 last_navs_refresh_success_at = get_meta(con, "last_navs_refresh_success_at")
                 last_incremental_backtests_refresh_at = get_meta(con, "last_incremental_backtests_refresh_at")
@@ -94,15 +95,20 @@ class Handler(SimpleHTTPRequestHandler):
             funds = []
             for code in FUNDS:
                 item = estimate_intraday(con, code)
-                item["backtest"] = backtest_summary(con, code)
+                item["backtest"] = (
+                    {"count": 0, "disabled": True}
+                    if backtests_disabled
+                    else backtest_summary(con, code)
+                )
                 funds.append(item)
-            data_alerts = collect_data_alerts(con, funds)
+            data_alerts = collect_data_alerts(con, funds, include_backtests=not backtests_disabled)
             payload = {
                 "last_realtime_quotes_refresh_at": last_quotes_refresh_at,
                 "last_purchase_limits_refresh_at": last_purchase_limits_refresh_at,
                 "last_navs_refresh_at": last_navs_refresh_at,
                 "last_navs_refresh_success_at": last_navs_refresh_success_at,
                 "last_incremental_backtests_refresh_at": last_incremental_backtests_refresh_at,
+                "backtests_disabled": backtests_disabled,
                 "quotes_refreshing": should_refresh_quotes,
                 "purchase_limits_refreshing": should_refresh_purchase_limits,
                 "navs_refreshing": should_refresh_navs,
@@ -112,7 +118,7 @@ class Handler(SimpleHTTPRequestHandler):
             }
         self.json(payload)
         if should_refresh_navs:
-            schedule_nav_refresh()
+            schedule_nav_refresh(update_backtests=not backtests_disabled)
         if should_refresh_quotes:
             schedule_quote_refresh(secids)
         if should_refresh_purchase_limits:
@@ -141,6 +147,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_backtest(self, code: str) -> None:
         with connect() as con:
+            if bool(get_meta(con, "backtests_disabled", False)):
+                self.json({"code": code, "rows": [], "disabled": True})
+                return
             rows = [
                 dict(row)
                 for row in con.execute(
@@ -160,7 +169,7 @@ class Handler(SimpleHTTPRequestHandler):
                      and p.date = b.date
                     where b.fund_code = ?
                     order by b.date desc
-                    limit 60
+                    limit 30
                     """,
                     (code,),
                 )
@@ -214,7 +223,7 @@ def purchase_limit_cache_is_empty(con) -> bool:
     return not row or row["count"] == 0
 
 
-def collect_data_alerts(con, funds: list[dict]) -> list[dict]:
+def collect_data_alerts(con, funds: list[dict], include_backtests: bool = True) -> list[dict]:
     alerts = []
     for fund in funds:
         missing_quotes = fund.get("missing_quotes") or []
@@ -230,6 +239,8 @@ def collect_data_alerts(con, funds: list[dict]) -> list[dict]:
                     "details": missing_quotes[:20],
                 }
             )
+        if not include_backtests:
+            continue
         latest = con.execute(
             """
             select date, previous_date
@@ -318,7 +329,7 @@ def schedule_quote_refresh(secids: list[str]) -> None:
     thread.start()
 
 
-def schedule_nav_refresh() -> None:
+def schedule_nav_refresh(update_backtests: bool = True) -> None:
     global _nav_refresh_started_at
     now = time.monotonic()
     if now - _nav_refresh_started_at < NAV_REFRESH_INTERVAL_SECONDS:
@@ -326,14 +337,14 @@ def schedule_nav_refresh() -> None:
     if not _nav_refresh_lock.acquire(blocking=False):
         return
     _nav_refresh_started_at = now
-    thread = threading.Thread(target=refresh_navs_in_background, daemon=True)
+    thread = threading.Thread(target=refresh_navs_in_background, args=(update_backtests,), daemon=True)
     thread.start()
 
 
-def refresh_navs_in_background() -> None:
+def refresh_navs_in_background(update_backtests: bool = True) -> None:
     try:
         with connect() as con:
-            refresh_navs(con)
+            refresh_navs(con, update_backtests=update_backtests)
     finally:
         _nav_refresh_lock.release()
 
