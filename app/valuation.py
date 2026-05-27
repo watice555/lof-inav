@@ -8,6 +8,7 @@ from statistics import pstdev
 from typing import Any
 
 from .config import FUNDS, FX_MIDPOINT_SECIDS, FX_SECID_OVERRIDES, US_EQUITY_CLOSE_MARKS
+from .market_calendar import expected_market_closure_gap
 
 
 def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
@@ -17,7 +18,8 @@ def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     latest_nav = con.execute(
         "select * from navs where fund_code = ? order by date desc limit 1", (code,)
     ).fetchone()
-    quote = con.execute("select * from quotes where secid = ?", (f"{fund['exchange_market']}.{code}",)).fetchone()
+    trade_secid = f"{fund['exchange_market']}.{code}"
+    quote = con.execute("select * from quotes where secid = ?", (trade_secid,)).fetchone()
     announcement = con.execute(
         "select title, publish_date, announcement_id, url from fund_announcements where fund_code = ?", (code,)
     ).fetchone()
@@ -42,6 +44,7 @@ def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
         "code": code,
         "name": fund["name"],
         "type": FUNDS[code].fund_type,
+        "trade_secid": trade_secid,
         "previous_nav": latest_nav["nav"] if latest_nav else None,
         "nav_date": latest_nav["date"] if latest_nav else None,
         "trade_price": trade_price,
@@ -282,9 +285,11 @@ def backtest_price_diagnostics(
 ) -> dict[str, Any]:
     holdings = holdings_available_on(con, code, previous_date, lag_days)
     asset_stale_weight = 0.0
+    asset_market_closed_weight = 0.0
     fx_stale_weight = 0.0
     missing_weight = 0.0
     asset_stale = []
+    asset_market_closed = []
     fx_stale = []
     missing = []
     for holding in holdings:
@@ -302,18 +307,24 @@ def backtest_price_diagnostics(
             )
             continue
         if previous[0] != previous_date or current[0] != current_date:
-            asset_stale_weight += holding["weight"]
-            asset_stale.append(
-                {
-                    "secid": holding["secid"],
-                    "name": holding["name"],
-                    "weight": holding["weight"],
-                    "previous_date": previous_date,
-                    "previous_price_date": previous[0],
-                    "current_date": current_date,
-                    "current_price_date": current[0],
-                }
+            stale_item = {
+                "secid": holding["secid"],
+                "name": holding["name"],
+                "weight": holding["weight"],
+                "previous_date": previous_date,
+                "previous_price_date": previous[0],
+                "current_date": current_date,
+                "current_price_date": current[0],
+            }
+            closure_market = _expected_asset_closure_market(
+                holding["secid"], previous_date, previous[0], current_date, current[0]
             )
+            if closure_market:
+                asset_market_closed_weight += holding["weight"]
+                asset_market_closed.append({**stale_item, "market": closure_market})
+            else:
+                asset_stale_weight += holding["weight"]
+                asset_stale.append(stale_item)
         fx_diag = _historical_fx_diagnostic(con, holding["secid"], previous_date, current_date)
         if fx_diag["missing"]:
             missing_weight += holding["weight"]
@@ -338,12 +349,35 @@ def backtest_price_diagnostics(
             )
     return {
         "asset_stale_weight": asset_stale_weight,
+        "asset_market_closed_weight": asset_market_closed_weight,
         "fx_stale_weight": fx_stale_weight,
         "missing_weight": missing_weight,
         "asset_stale": asset_stale,
+        "asset_market_closed": asset_market_closed,
         "fx_stale": fx_stale,
         "missing": missing,
     }
+
+
+def _expected_asset_closure_market(
+    secid: str,
+    previous_date: str,
+    previous_price_date: str,
+    current_date: str,
+    current_price_date: str,
+) -> str | None:
+    markets = []
+    if previous_price_date != previous_date:
+        market = expected_market_closure_gap(secid, previous_date, previous_price_date)
+        if market is None:
+            return None
+        markets.append(market)
+    if current_price_date != current_date:
+        market = expected_market_closure_gap(secid, current_date, current_price_date)
+        if market is None:
+            return None
+        markets.append(market)
+    return markets[0] if markets and all(market == markets[0] for market in markets) else None
 
 
 def save_backtest_row(con: sqlite3.Connection, row: dict[str, Any]) -> None:

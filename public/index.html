@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LOF iNAV</title>
-    <link rel="stylesheet" href="/styles.css?v=20260514-premium-threshold" />
+    <link rel="stylesheet" href="/styles.css?v=20260527-detail-scroll-toggle" />
   </head>
   <body>
     <main class="shell">
@@ -18,6 +18,25 @@
           <button id="exportCsvBtn" type="button">导出CSV</button>
           <button id="exportPngBtn" type="button">导出PNG</button>
           <button id="refreshBtn" type="button">刷新</button>
+          <label class="detail-scroll-toggle" title="点击基金后自动滚动到持仓和回测">
+            <input id="autoScrollDetailsToggle" type="checkbox" checked />
+            <span class="toggle-switch" aria-hidden="true"></span>
+            <span>自动滚动</span>
+          </label>
+          <div id="columnPicker" class="column-picker">
+            <button id="columnPickerBtn" type="button" aria-expanded="false" aria-haspopup="true">编辑表头</button>
+            <div id="columnPickerMenu" class="column-picker-menu" hidden>
+              <div class="column-picker-header">
+                <strong>展示列</strong>
+                <span id="columnPickerSummary">默认展示常用列</span>
+              </div>
+              <div id="columnOptions" class="column-options"></div>
+              <div class="column-picker-actions">
+                <button id="selectAllColumnsBtn" type="button">全选</button>
+                <button id="resetColumnsBtn" type="button">恢复默认</button>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -75,36 +94,10 @@
       </section>
 
       <section class="table-wrap">
-        <table>
-          <colgroup>
-            <col class="fund-col-name" />
-            <col class="fund-col-type" />
-            <col class="fund-col-announcement" />
-            <col class="fund-col-limit" />
-            <col class="fund-col-nav" />
-            <col class="fund-col-price" />
-            <col class="fund-col-estimate" />
-            <col class="fund-col-premium" />
-            <col class="fund-col-covered" />
-            <col class="fund-col-backtest" />
-            <col class="fund-col-backtest-vol" />
-            <col class="fund-col-note" />
-          </colgroup>
+        <table class="fund-table">
+          <colgroup id="fundTableCols"></colgroup>
           <thead>
-            <tr>
-              <th data-sort-key="fund" aria-sort="none"><button class="sort-button" type="button">基金</button></th>
-              <th data-sort-key="type" aria-sort="none"><button class="sort-button" type="button">类型</button></th>
-              <th data-sort-key="announcement" aria-sort="none"><button class="sort-button" type="button">公告</button></th>
-              <th data-sort-key="purchase_limit" aria-sort="none"><button class="sort-button" type="button">申购限额</button></th>
-              <th data-sort-key="previous_nav" aria-sort="none"><button class="sort-button" type="button">上一日净值</button></th>
-              <th data-sort-key="trade_price" aria-sort="none"><button class="sort-button" type="button">场内价格</button></th>
-              <th data-sort-key="estimated_nav" aria-sort="none"><button class="sort-button" type="button">系统估值</button></th>
-              <th data-sort-key="premium" aria-sort="none"><button class="sort-button" type="button">折溢价率</button></th>
-              <th data-sort-key="covered_weight" aria-sort="none"><button class="sort-button" type="button">覆盖仓位</button></th>
-              <th data-sort-key="backtest_mae" aria-sort="none"><button class="sort-button" type="button">回测 MAE</button></th>
-              <th data-sort-key="backtest_mae_vol" aria-sort="none"><button class="sort-button" type="button">MAE/波动</button></th>
-              <th>备注</th>
-            </tr>
+            <tr id="fundTableHeaders"></tr>
           </thead>
           <tbody id="fundRows"></tbody>
         </table>
@@ -128,6 +121,6 @@
         </p>
       </section>
     </main>
-    <script src="/app.js?v=20260514-premium-threshold"></script>
+    <script src="/app.js?v=20260527-detail-scroll-toggle"></script>
   </body>
 </html>

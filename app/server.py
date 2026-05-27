@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import threading
 import time
@@ -28,6 +29,11 @@ _purchase_limit_refresh_lock = threading.Lock()
 _purchase_limit_refresh_started_at = 0.0
 _nav_refresh_lock = threading.Lock()
 _nav_refresh_started_at = 0.0
+
+
+class SingleInstanceHTTPServer(ThreadingHTTPServer):
+    # HTTPServer enables SO_REUSEADDR, which lets Windows bind duplicate local servers.
+    allow_reuse_address = False
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -176,7 +182,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     init_db()
-    server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
+    try:
+        server = SingleInstanceHTTPServer(("127.0.0.1", 8000), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
+            raise SystemExit("LOF iNAV server is already running at http://127.0.0.1:8000") from exc
+        raise
     print("LOF iNAV server: http://127.0.0.1:8000")
     server.serve_forever()
 

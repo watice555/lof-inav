@@ -78,6 +78,91 @@ button {
   padding: 0 14px;
 }
 
+.column-picker {
+  position: relative;
+}
+
+.column-picker-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(23, 32, 42, 0.16);
+  padding: 12px;
+}
+
+.column-picker-menu[hidden] {
+  display: none;
+}
+
+.column-picker-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.column-picker-header strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.column-picker-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.column-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.column-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #cad3df;
+  border-radius: 6px;
+  background: #f7f9fc;
+  padding: 0 8px;
+  color: #2e3a4d;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.column-option input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.column-option input:disabled {
+  cursor: not-allowed;
+}
+
+.column-required {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.column-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .table-wrap,
 .filters,
 .data-alerts,
@@ -350,6 +435,66 @@ button:disabled {
   opacity: 0.65;
 }
 
+.detail-scroll-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  border: 1px solid #b7c4d8;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 650;
+  user-select: none;
+}
+
+.detail-scroll-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  background: #cad3df;
+  transition: background 0.18s ease;
+}
+
+.toggle-switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(23, 32, 42, 0.25);
+  content: "";
+  transition: transform 0.18s ease;
+}
+
+.detail-scroll-toggle input:checked + .toggle-switch {
+  background: var(--blue);
+}
+
+.detail-scroll-toggle input:checked + .toggle-switch::after {
+  transform: translateX(16px);
+}
+
+.detail-scroll-toggle input:focus-visible + .toggle-switch {
+  outline: 2px solid rgba(21, 84, 162, 0.35);
+  outline-offset: 2px;
+}
+
 .type-pill {
   display: inline-flex;
   align-items: center;
@@ -364,11 +509,11 @@ button:disabled {
   white-space: nowrap;
 }
 
-tbody tr {
+.fund-table tbody tr {
   cursor: pointer;
 }
 
-tbody tr:hover {
+.fund-table tbody tr:hover {
   background: #f2f6fb;
 }
 
@@ -412,23 +557,18 @@ tbody tr:hover {
   width: 10%;
 }
 
-td:first-child,
-td:last-child {
+.fund-table td.align-left,
+.fund-table th.align-left {
   overflow-wrap: anywhere;
   text-align: left;
 }
 
-th:first-child,
-th:last-child {
-  text-align: left;
-}
-
-th:first-child .sort-button {
+.fund-table th.align-left .sort-button {
   justify-content: flex-start;
 }
 
-td:not(:first-child):not(:last-child),
-th:not(:first-child):not(:last-child) {
+.fund-table td:not(.align-left),
+.fund-table th:not(.align-left) {
   white-space: nowrap;
 }
 
@@ -458,6 +598,19 @@ th:not(:first-child):not(:last-child) {
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
+}
+
+.quote-price-link {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: rgba(33, 105, 190, 0.35);
+  text-underline-offset: 3px;
+}
+
+.quote-price-link:hover {
+  color: var(--blue);
+  text-decoration-color: currentColor;
 }
 
 .announce-link {
@@ -534,6 +687,7 @@ th:not(:first-child):not(:last-child) {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   margin-top: 16px;
+  scroll-margin-top: 16px;
 }
 
 .panel {
@@ -651,8 +805,12 @@ th:not(:first-child):not(:last-child) {
     overflow-x: auto;
   }
 
-  table {
+  .fund-table {
     min-width: 1180px;
+  }
+
+  .column-options {
+    grid-template-columns: 1fr;
   }
 
   .panel {

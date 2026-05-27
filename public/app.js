@@ -4,6 +4,17 @@ const dataAlertsEl = document.querySelector("#dataAlerts");
 const refreshBtn = document.querySelector("#refreshBtn");
 const exportCsvBtn = document.querySelector("#exportCsvBtn");
 const exportPngBtn = document.querySelector("#exportPngBtn");
+const autoScrollDetailsToggle = document.querySelector("#autoScrollDetailsToggle");
+const columnPickerEl = document.querySelector("#columnPicker");
+const columnPickerBtn = document.querySelector("#columnPickerBtn");
+const columnPickerMenu = document.querySelector("#columnPickerMenu");
+const columnOptionsEl = document.querySelector("#columnOptions");
+const columnPickerSummaryEl = document.querySelector("#columnPickerSummary");
+const selectAllColumnsBtn = document.querySelector("#selectAllColumnsBtn");
+const resetColumnsBtn = document.querySelector("#resetColumnsBtn");
+const tableColsEl = document.querySelector("#fundTableCols");
+const tableHeadersEl = document.querySelector("#fundTableHeaders");
+const detailGridEl = document.querySelector(".detail-grid");
 const holdingsEl = document.querySelector("#holdings");
 const backtestEl = document.querySelector("#backtest");
 const typeFiltersEl = document.querySelector("#typeFilters");
@@ -19,7 +30,6 @@ const discountBelowInput = document.querySelector("#discountBelowInput");
 const showAllPremiumsBtn = document.querySelector("#showAllPremiumsBtn");
 const showPremiumAboveBtn = document.querySelector("#showPremiumAboveBtn");
 const showDiscountBelowBtn = document.querySelector("#showDiscountBelowBtn");
-const sortableHeaders = [...document.querySelectorAll("th[data-sort-key]")];
 
 let currentCode = null;
 let currentFunds = [];
@@ -27,6 +37,9 @@ let availableTypes = [];
 let selectedTypes = new Set();
 let hidePausedPurchase = false;
 let premiumFilterMode = "all";
+let autoScrollDetails = true;
+let visibleColumnKeys = new Set();
+let sortableHeaders = [];
 let sortState = {
   key: null,
   direction: null,
@@ -47,20 +60,141 @@ const typeOrder = [
 ];
 
 const typeOrderRank = new Map(typeOrder.map((type, index) => [type, index]));
+const COLUMN_STORAGE_KEY = "lof-inav-visible-columns-v2";
+const DETAIL_SCROLL_STORAGE_KEY = "lof-inav-auto-scroll-details-v1";
 
-const sortAccessors = {
-  fund: (fund) => fund.code,
-  type: (fund) => typeSortValue(getFundType(fund)),
-  announcement: (fund) => fund.announcement?.publish_date,
-  purchase_limit: (fund) => fund.purchase_limit?.sort_value,
-  previous_nav: (fund) => fund.previous_nav,
-  trade_price: (fund) => fund.trade_price,
-  estimated_nav: (fund) => fund.estimated_nav,
-  premium: (fund) => fund.premium,
-  covered_weight: (fund) => fund.covered_weight,
-  backtest_mae: (fund) => fund.backtest?.mae_pct,
-  backtest_mae_vol: (fund) => fund.backtest?.mae_to_nav_volatility,
-};
+const tableColumns = [
+  {
+    key: "fund",
+    title: "基金",
+    width: 0.17,
+    align: "left",
+    className: "fund-col-name",
+    required: true,
+    defaultVisible: true,
+    sortValue: (fund) => fund.code,
+    cell: (fund) => `
+      <div class="fund-name">${escapeHtml(fund.name || "--")}</div>
+      <div class="fund-code">${escapeHtml(fund.code || "--")} / ${escapeHtml(fund.nav_date || "--")}</div>
+    `,
+    exportCell: (fund) => [fund.name || "--", `${fund.code || "--"} / ${fund.nav_date || "--"}`],
+  },
+  {
+    key: "type",
+    title: "类型",
+    width: 0.1,
+    className: "fund-col-type",
+    defaultVisible: true,
+    sortValue: (fund) => typeSortValue(getFundType(fund)),
+    cell: (fund) => `<span class="type-pill">${escapeHtml(getFundType(fund))}</span>`,
+    exportCell: (fund) => [getFundType(fund)],
+  },
+  {
+    key: "announcement",
+    title: "公告",
+    width: 0.06,
+    className: "fund-col-announcement",
+    defaultVisible: false,
+    sortValue: (fund) => fund.announcement?.publish_date,
+    cell: (fund) => renderAnnouncement(fund.announcement),
+    exportCell: (fund) => [fund.announcement?.publish_date || ""],
+  },
+  {
+    key: "purchase_limit",
+    title: "申购限额",
+    width: 0.07,
+    className: "fund-col-limit",
+    defaultVisible: true,
+    sortValue: (fund) => fund.purchase_limit?.sort_value,
+    cell: (fund) => renderPurchaseLimit(fund.purchase_limit),
+    exportCell: (fund) => [fund.purchase_limit?.display || "--"],
+  },
+  {
+    key: "previous_nav",
+    title: "上一日净值",
+    width: 0.07,
+    className: "fund-col-nav",
+    defaultVisible: true,
+    sortValue: (fund) => fund.previous_nav,
+    cell: (fund) => valueWithMeta(fmt(fund.previous_nav, 4), dateOnly(fund.nav_date)),
+    exportCell: (fund) => [fmt(fund.previous_nav, 4), dateOnly(fund.nav_date)],
+  },
+  {
+    key: "trade_price",
+    title: "场内价格",
+    width: 0.07,
+    className: "fund-col-price",
+    defaultVisible: true,
+    sortValue: (fund) => fund.trade_price,
+    cell: (fund) => renderTradePrice(fund),
+    exportCell: (fund) => [fmt(fund.trade_price, 3), minuteTime(fund.quote_time)],
+  },
+  {
+    key: "estimated_nav",
+    title: "系统估值",
+    width: 0.07,
+    className: "fund-col-estimate",
+    defaultVisible: true,
+    sortValue: (fund) => fund.estimated_nav,
+    cell: (fund) => fmt(fund.estimated_nav, 4),
+    exportCell: (fund) => [fmt(fund.estimated_nav, 4)],
+  },
+  {
+    key: "premium",
+    title: "折溢价率",
+    width: 0.07,
+    className: "fund-col-premium",
+    defaultVisible: true,
+    sortValue: (fund) => fund.premium,
+    cell: (fund) => signedPct(fund.premium),
+    exportCell: (fund) => [pct(fund.premium)],
+  },
+  {
+    key: "covered_weight",
+    title: "覆盖仓位",
+    width: 0.07,
+    className: "fund-col-covered",
+    defaultVisible: false,
+    sortValue: (fund) => fund.covered_weight,
+    cell: (fund) => pct(fund.covered_weight),
+    exportCell: (fund) => [pct(fund.covered_weight)],
+  },
+  {
+    key: "backtest_mae",
+    title: "回测 MAE",
+    width: 0.07,
+    className: "fund-col-backtest",
+    defaultVisible: false,
+    sortValue: (fund) => fund.backtest?.mae_pct,
+    cell: (fund) => (fund.backtest && fund.backtest.mae_pct !== undefined ? pct(fund.backtest.mae_pct) : "--"),
+    exportCell: (fund) => [fund.backtest?.mae_pct !== undefined ? pct(fund.backtest.mae_pct) : "--"],
+  },
+  {
+    key: "backtest_mae_vol",
+    title: "MAE/波动",
+    width: 0.07,
+    className: "fund-col-backtest-vol",
+    defaultVisible: false,
+    sortValue: (fund) => fund.backtest?.mae_to_nav_volatility,
+    cell: (fund) =>
+      fund.backtest && fund.backtest.mae_to_nav_volatility !== undefined
+        ? fmt(fund.backtest.mae_to_nav_volatility, 2)
+        : "--",
+    exportCell: (fund) => [
+      fund.backtest?.mae_to_nav_volatility !== undefined ? fmt(fund.backtest.mae_to_nav_volatility, 2) : "--",
+    ],
+  },
+  {
+    key: "note",
+    title: "备注",
+    width: 0.1,
+    align: "left",
+    className: "fund-col-note",
+    defaultVisible: false,
+    cell: (fund) => escapeHtml(fund.note || ""),
+    exportCell: (fund) => [fund.note || ""],
+  },
+];
 
 function fmt(value, digits = 4) {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
@@ -114,6 +248,161 @@ function valueWithMeta(valueHtml, metaText) {
       <div class="value-meta">${escapeHtml(metaText || "--")}</div>
     </div>
   `;
+}
+
+function renderTradePrice(fund) {
+  const priceText = fmt(fund.trade_price, 3);
+  const quoteUrl = getTradeQuoteUrl(fund);
+  const priceHtml = quoteUrl
+    ? `<a class="quote-price-link" href="${escapeHtml(quoteUrl)}" target="_blank" rel="noreferrer" title="打开东方财富实时行情">${escapeHtml(priceText)}</a>`
+    : escapeHtml(priceText);
+  return valueWithMeta(priceHtml, minuteTime(fund.quote_time));
+}
+
+function getTradeQuoteUrl(fund) {
+  const secid = fund.trade_secid || inferTradeSecid(fund.code);
+  return secid ? `https://quote.eastmoney.com/unify/r/${encodeURIComponent(secid)}` : "";
+}
+
+function inferTradeSecid(code) {
+  if (!/^\d{6}$/.test(String(code || ""))) return "";
+  const market = String(code).startsWith("5") ? "1" : "0";
+  return `${market}.${code}`;
+}
+
+function loadAutoScrollDetails() {
+  try {
+    const raw = window.localStorage.getItem(DETAIL_SCROLL_STORAGE_KEY);
+    return raw === null ? true : raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+function saveAutoScrollDetails(value) {
+  try {
+    window.localStorage.setItem(DETAIL_SCROLL_STORAGE_KEY, String(value));
+  } catch {
+    // Ignore storage errors; the toggle should still work for this page load.
+  }
+}
+
+function syncAutoScrollDetailsToggle() {
+  if (autoScrollDetailsToggle) {
+    autoScrollDetailsToggle.checked = autoScrollDetails;
+  }
+}
+
+function setAutoScrollDetails(value) {
+  autoScrollDetails = Boolean(value);
+  saveAutoScrollDetails(autoScrollDetails);
+  syncAutoScrollDetailsToggle();
+}
+
+function getDefaultColumnKeys() {
+  return tableColumns.filter((column) => column.required || column.defaultVisible).map((column) => column.key);
+}
+
+function loadVisibleColumnKeys() {
+  const knownKeys = new Set(tableColumns.map((column) => column.key));
+  try {
+    const raw = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed)) {
+      const keys = parsed.filter((key) => knownKeys.has(key));
+      tableColumns.forEach((column) => {
+        if (column.required && !keys.includes(column.key)) keys.push(column.key);
+      });
+      return keys.length ? keys : getDefaultColumnKeys();
+    }
+  } catch (error) {
+    console.warn("读取表头配置失败，已使用默认配置", error);
+  }
+  return getDefaultColumnKeys();
+}
+
+function saveVisibleColumnKeys() {
+  try {
+    window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify([...visibleColumnKeys]));
+  } catch (error) {
+    console.warn("保存表头配置失败", error);
+  }
+}
+
+function getVisibleColumns() {
+  return tableColumns.filter((column) => visibleColumnKeys.has(column.key) || column.required);
+}
+
+function getSortAccessor(key) {
+  return tableColumns.find((column) => column.key === key)?.sortValue;
+}
+
+function applyColumnVisibility(nextKeys) {
+  const nextVisibleKeys = new Set(nextKeys);
+  tableColumns.forEach((column) => {
+    if (column.required) nextVisibleKeys.add(column.key);
+  });
+  visibleColumnKeys = nextVisibleKeys;
+  if (sortState.key && !visibleColumnKeys.has(sortState.key)) {
+    sortState = { key: null, direction: null };
+  }
+  saveVisibleColumnKeys();
+  renderColumnControls();
+  renderTableStructure();
+  renderFunds(getVisibleFunds());
+}
+
+function renderColumnControls() {
+  const selectedCount = getVisibleColumns().length;
+  columnPickerSummaryEl.textContent = `已展示 ${selectedCount} / ${tableColumns.length} 列`;
+  columnOptionsEl.innerHTML = tableColumns
+    .map((column) => {
+      const checked = visibleColumnKeys.has(column.key) || column.required ? "checked" : "";
+      const disabled = column.required ? "disabled" : "";
+      return `
+        <label class="column-option">
+          <input type="checkbox" value="${escapeHtml(column.key)}" ${checked} ${disabled} />
+          <span>${escapeHtml(column.title)}</span>
+          ${column.required ? `<span class="column-required">必选</span>` : ""}
+        </label>
+      `;
+    })
+    .join("");
+  selectAllColumnsBtn.disabled = selectedCount === tableColumns.length;
+  resetColumnsBtn.disabled = columnKeySetsEqual(visibleColumnKeys, new Set(getDefaultColumnKeys()));
+}
+
+function columnKeySetsEqual(left, right) {
+  if (left.size !== right.size) return false;
+  return [...left].every((key) => right.has(key));
+}
+
+function renderTableStructure() {
+  const columns = getVisibleColumns();
+  tableColsEl.innerHTML = columns.map((column) => `<col class="${escapeHtml(column.className)}" />`).join("");
+  tableHeadersEl.innerHTML = columns
+    .map((column) => {
+      const alignClass = column.align === "left" ? " align-left" : "";
+      if (!column.sortValue) {
+        return `<th class="${alignClass.trim()}">${escapeHtml(column.title)}</th>`;
+      }
+      return `
+        <th class="${alignClass.trim()}" data-sort-key="${escapeHtml(column.key)}" aria-sort="none">
+          <button class="sort-button" type="button">${escapeHtml(column.title)}</button>
+        </th>
+      `;
+    })
+    .join("");
+  sortableHeaders = [...tableHeadersEl.querySelectorAll("th[data-sort-key]")];
+  sortableHeaders.forEach((header) => {
+    header.addEventListener("click", () => cycleSort(header.dataset.sortKey));
+  });
+  updateSortHeaders();
+}
+
+function setColumnPickerOpen(open) {
+  columnPickerMenu.hidden = !open;
+  columnPickerBtn.setAttribute("aria-expanded", String(open));
 }
 
 async function loadFunds() {
@@ -185,6 +474,11 @@ function alertDetailsText(alert) {
       `价格 ${item.secid} ${item.name}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
     );
   }
+  for (const item of details.asset_market_closed || []) {
+    rows.push(
+      `休市 ${item.secid} ${item.name}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
+    );
+  }
   for (const item of details.fx_stale || []) {
     rows.push(
       `汇率 ${item.fx_secid} for ${item.secid}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
@@ -202,7 +496,7 @@ function getVisibleFunds() {
       selectedTypes.has(getFundType(fund)) && purchaseLimitMatchesFilter(fund) && premiumMatchesFilter(fund)
   );
   if (!sortState.key || !sortState.direction) return filteredFunds;
-  const getValue = sortAccessors[sortState.key];
+  const getValue = getSortAccessor(sortState.key);
   if (!getValue) return filteredFunds;
 
   return [...filteredFunds].sort((a, b) => {
@@ -369,7 +663,8 @@ function getActiveFilterSummary() {
       ? `全部 ${availableTypes.length} 个类型`
       : `${selectedTypes.size} / ${availableTypes.length} 个类型`;
   const purchaseText = hidePausedPurchase ? "屏蔽暂停申购" : "全部申购状态";
-  return `筛选：${typeText} / ${purchaseText} / ${getPremiumFilterLabel()}`;
+  const columnText = `展示列 ${getVisibleColumns().length} / ${tableColumns.length}`;
+  return `筛选：${typeText} / ${purchaseText} / ${getPremiumFilterLabel()} / ${columnText}`;
 }
 
 function selectAllTypes() {
@@ -437,48 +732,35 @@ function updateSortHeaders() {
 }
 
 function renderFunds(funds) {
+  const columns = getVisibleColumns();
   if (!funds.length) {
     rowsEl.innerHTML = `
       <tr>
-        <td class="empty-state" colspan="12">当前筛选下暂无基金</td>
+        <td class="empty-state" colspan="${columns.length}">当前筛选下暂无基金</td>
       </tr>
     `;
     return;
   }
 
   rowsEl.innerHTML = funds
-    .map((fund) => {
-      const mae = fund.backtest && fund.backtest.mae_pct !== undefined ? pct(fund.backtest.mae_pct) : "--";
-      const maeVol =
-        fund.backtest && fund.backtest.mae_to_nav_volatility !== undefined
-          ? fmt(fund.backtest.mae_to_nav_volatility, 2)
-          : "--";
-      return `
-        <tr data-code="${fund.code}">
-          <td>
-            <div class="fund-name">${fund.name}</div>
-            <div class="fund-code">${fund.code} / ${fund.nav_date || "--"}</div>
-          </td>
-          <td><span class="type-pill">${escapeHtml(getFundType(fund))}</span></td>
-          <td>${renderAnnouncement(fund.announcement)}</td>
-          <td>${renderPurchaseLimit(fund.purchase_limit)}</td>
-          <td>${valueWithMeta(fmt(fund.previous_nav, 4), dateOnly(fund.nav_date))}</td>
-          <td>${valueWithMeta(fmt(fund.trade_price, 3), minuteTime(fund.quote_time))}</td>
-          <td>${fmt(fund.estimated_nav, 4)}</td>
-          <td>${signedPct(fund.premium)}</td>
-          <td>${pct(fund.covered_weight)}</td>
-          <td>${mae}</td>
-          <td>${maeVol}</td>
-          <td>${fund.note || ""}</td>
+    .map(
+      (fund) => `
+        <tr data-code="${escapeHtml(fund.code)}">
+          ${columns
+            .map((column) => {
+              const alignClass = column.align === "left" ? " align-left" : "";
+              return `<td class="${alignClass.trim()}">${column.cell(fund)}</td>`;
+            })
+            .join("")}
         </tr>
-      `;
-    })
+      `
+    )
     .join("");
   [...rowsEl.querySelectorAll("tr")].forEach((row) => {
-    row.addEventListener("click", () => showDetails(row.dataset.code));
-  });
-  [...rowsEl.querySelectorAll(".announce-link, .announcement-pdf-link")].forEach((link) => {
-    link.addEventListener("click", (event) => event.stopPropagation());
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a")) return;
+      showDetails(row.dataset.code, { scrollToDetails: autoScrollDetails });
+    });
   });
 }
 
@@ -510,7 +792,7 @@ function getAnnouncementPdfUrl(announcement) {
   return `https://pdf.dfcfw.com/pdf/H2_${announcementId}_1.pdf`;
 }
 
-async function showDetails(code) {
+async function showDetails(code, options = {}) {
   currentCode = code;
   const [holdingsRes, backtestRes] = await Promise.all([
     fetch(`/api/funds/${code}/holdings`),
@@ -520,6 +802,18 @@ async function showDetails(code) {
   const backtest = await backtestRes.json();
   holdingsEl.innerHTML = renderHoldings(holdings.holdings);
   backtestEl.innerHTML = renderBacktest(backtest.rows);
+  if (options.scrollToDetails) {
+    scrollToDetails();
+  }
+}
+
+function scrollToDetails() {
+  if (!detailGridEl) return;
+  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  detailGridEl.scrollIntoView({
+    behavior: prefersReducedMotion ? "auto" : "smooth",
+    block: "start",
+  });
 }
 
 function renderHoldings(rows) {
@@ -584,12 +878,21 @@ function renderBacktest(rows) {
 function renderBacktestQuality(diagnostics) {
   if (!diagnostics) return "--";
   const assetWeight = Number(diagnostics.asset_stale_weight || 0);
+  const marketClosedWeight = Number(diagnostics.asset_market_closed_weight || 0);
   const fxWeight = Number(diagnostics.fx_stale_weight || 0);
   const missingWeight = Number(diagnostics.missing_weight || 0);
   const total = assetWeight + fxWeight + missingWeight;
-  if (!total) return `<span class="quality-ok">正常</span>`;
+  const marketClosedRows = (diagnostics.asset_market_closed || []).map(
+    (item) =>
+      `休市 ${item.secid} ${item.name}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
+  );
+  if (!total) {
+    if (!marketClosedWeight) return `<span class="quality-ok">正常</span>`;
+    return `<span class="quality-ok" title="${escapeHtml(marketClosedRows.join("\n"))}">休市回退 ${pct(marketClosedWeight)}</span>`;
+  }
   const details = [];
   if (assetWeight) details.push(`价格回退 ${pct(assetWeight)}`);
+  if (marketClosedWeight) details.push(`休市回退 ${pct(marketClosedWeight)}`);
   if (fxWeight) details.push(`汇率回退 ${pct(fxWeight)}`);
   if (missingWeight) details.push(`缺失 ${pct(missingWeight)}`);
   const title = [
@@ -597,6 +900,7 @@ function renderBacktestQuality(diagnostics) {
       (item) =>
         `价格 ${item.secid} ${item.name}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
     ),
+    ...marketClosedRows,
     ...(diagnostics.fx_stale || []).map(
       (item) =>
         `汇率 ${item.fx_secid} for ${item.secid}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
@@ -619,37 +923,8 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-const exportColumns = [
-  { key: "fund", title: "基金", width: 0.17, align: "left" },
-  { key: "type", title: "类型", width: 0.1 },
-  { key: "announcement", title: "公告", width: 0.06 },
-  { key: "purchase_limit", title: "申购限额", width: 0.07 },
-  { key: "previous_nav", title: "上一日净值", width: 0.07 },
-  { key: "trade_price", title: "场内价格", width: 0.07 },
-  { key: "estimated_nav", title: "系统估值", width: 0.07 },
-  { key: "premium", title: "折溢价率", width: 0.07 },
-  { key: "covered_weight", title: "覆盖仓位", width: 0.07 },
-  { key: "backtest_mae", title: "回测 MAE", width: 0.07 },
-  { key: "backtest_mae_vol", title: "MAE/波动", width: 0.07 },
-  { key: "note", title: "备注", width: 0.11, align: "left" },
-];
-
-function getExportCell(fund, key) {
-  if (key === "fund") return [fund.name || "--", `${fund.code || "--"} / ${fund.nav_date || "--"}`];
-  if (key === "type") return [getFundType(fund)];
-  if (key === "announcement") return [fund.announcement?.publish_date || ""];
-  if (key === "purchase_limit") return [fund.purchase_limit?.display || "--"];
-  if (key === "previous_nav") return [fmt(fund.previous_nav, 4), dateOnly(fund.nav_date)];
-  if (key === "trade_price") return [fmt(fund.trade_price, 3), minuteTime(fund.quote_time)];
-  if (key === "estimated_nav") return [fmt(fund.estimated_nav, 4)];
-  if (key === "premium") return [pct(fund.premium)];
-  if (key === "covered_weight") return [pct(fund.covered_weight)];
-  if (key === "backtest_mae") return [fund.backtest?.mae_pct !== undefined ? pct(fund.backtest.mae_pct) : "--"];
-  if (key === "backtest_mae_vol") {
-    return [fund.backtest?.mae_to_nav_volatility !== undefined ? fmt(fund.backtest.mae_to_nav_volatility, 2) : "--"];
-  }
-  if (key === "note") return [fund.note || ""];
-  return [""];
+function getExportColumns() {
+  return getVisibleColumns();
 }
 
 function csvEscape(value) {
@@ -662,10 +937,11 @@ function exportCsv() {
   if (!currentFunds.length) return;
 
   const funds = getVisibleFunds();
-  const header = exportColumns.map((column) => csvEscape(column.title)).join(",");
+  const columns = getExportColumns();
+  const header = columns.map((column) => csvEscape(column.title)).join(",");
   const rows = funds.map((fund) =>
-    exportColumns
-      .map((column) => csvEscape(getExportCell(fund, column.key).filter(Boolean).join(" ")))
+    columns
+      .map((column) => csvEscape(column.exportCell(fund).filter(Boolean).join(" ")))
       .join(",")
   );
   const content = `\ufeff${[header, ...rows].join("\r\n")}\r\n`;
@@ -735,20 +1011,17 @@ function drawMultilineCell(context, lines, x, y, width, height, options = {}) {
   });
 }
 
-function getExportColumnWidths(width) {
-  const colWidths = exportColumns.map((column) => Math.round(column.width * width));
+function getExportColumnWidths(width, columns = getExportColumns()) {
+  const totalWeight = columns.reduce((sum, column) => sum + column.width, 0) || 1;
+  const colWidths = columns.map((column) => Math.round((column.width / totalWeight) * width));
   colWidths[colWidths.length - 1] += width - colWidths.reduce((sum, value) => sum + value, 0);
   return colWidths;
 }
 
-function getExportRowHeight(context, fund, colWidths) {
-  const maxLineCount = exportColumns.reduce((maxLines, column, index) => {
+function getExportRowHeight(context, fund, colWidths, columns = getExportColumns()) {
+  const maxLineCount = columns.reduce((maxLines, column, index) => {
     const colWidth = colWidths[index];
-    const rawLines = getExportCell(fund, column.key);
-    const lines =
-      column.key === "note"
-        ? wrapCanvasText(context, fund.note || "", colWidth - 16)
-        : rawLines.flatMap((line) => wrapCanvasText(context, line, colWidth - 16));
+    const lines = column.exportCell(fund).flatMap((line) => wrapCanvasText(context, line, colWidth - 16));
     return Math.max(maxLines, lines.length);
   }, 1);
   return Math.max(52, 18 + maxLineCount * 17);
@@ -758,7 +1031,8 @@ function drawExportTable(context, funds, x, y, width) {
   const lineColor = "#d9dee7";
   const headerHeight = 42;
   const emptyHeight = 72;
-  const colWidths = getExportColumnWidths(width);
+  const columns = getExportColumns();
+  const colWidths = getExportColumnWidths(width, columns);
 
   context.save();
   context.strokeStyle = lineColor;
@@ -770,7 +1044,7 @@ function drawExportTable(context, funds, x, y, width) {
   context.fillStyle = "#415064";
 
   let currentX = x;
-  exportColumns.forEach((column, index) => {
+  columns.forEach((column, index) => {
     const colWidth = colWidths[index];
     drawMultilineCell(context, [column.title], currentX, y, colWidth, headerHeight, {
       align: column.align || "center",
@@ -800,20 +1074,16 @@ function drawExportTable(context, funds, x, y, width) {
   }
 
   funds.forEach((fund) => {
-    const rowHeight = getExportRowHeight(context, fund, colWidths);
+    const rowHeight = getExportRowHeight(context, fund, colWidths, columns);
     context.fillStyle = "#fff";
     context.fillRect(x, currentY, width, rowHeight);
     context.strokeStyle = lineColor;
     context.strokeRect(x, currentY, width, rowHeight);
 
     currentX = x;
-    exportColumns.forEach((column, index) => {
+    columns.forEach((column, index) => {
       const colWidth = colWidths[index];
-      const rawLines = getExportCell(fund, column.key);
-      const lines =
-        column.key === "note"
-          ? wrapCanvasText(context, fund.note || "", colWidth - 16)
-          : rawLines.flatMap((line) => wrapCanvasText(context, line, colWidth - 16));
+      const lines = column.exportCell(fund).flatMap((line) => wrapCanvasText(context, line, colWidth - 16));
       const colors = lines.map((line, lineIndex) => {
         if (column.key === "fund" && lineIndex > 0) return "#627086";
         if (column.key === "previous_nav" && lineIndex > 0) return "#627086";
@@ -855,13 +1125,14 @@ async function exportPng() {
     const disclaimerText = document.querySelector(".disclaimer p")?.textContent || "";
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
+    const columns = getExportColumns();
 
     context.font = "13px 'Microsoft YaHei', 'Segoe UI', sans-serif";
     const disclaimerLines = wrapCanvasText(context, disclaimerText, contentWidth - 32);
-    const colWidths = getExportColumnWidths(contentWidth);
+    const colWidths = getExportColumnWidths(contentWidth, columns);
     const rowHeights = funds.map((fund) => {
       context.font = "13px 'Microsoft YaHei', 'Segoe UI', sans-serif";
-      return getExportRowHeight(context, fund, colWidths);
+      return getExportRowHeight(context, fund, colWidths, columns);
     });
     const tableHeight = 42 + (funds.length ? rowHeights.reduce((sum, value) => sum + value, 0) : 72);
     const disclaimerHeight = 52 + disclaimerLines.length * 22;
@@ -914,11 +1185,31 @@ refreshBtn.addEventListener("click", loadFunds);
 dataAlertsEl?.addEventListener("click", (event) => {
   const item = event.target.closest("[data-alert-code]");
   if (!item) return;
-  showDetails(item.dataset.alertCode);
-  document.querySelector(".detail-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  showDetails(item.dataset.alertCode, { scrollToDetails: autoScrollDetails });
 });
 exportCsvBtn.addEventListener("click", exportCsv);
 exportPngBtn.addEventListener("click", exportPng);
+autoScrollDetailsToggle.addEventListener("change", () => setAutoScrollDetails(autoScrollDetailsToggle.checked));
+columnPickerBtn.addEventListener("click", () => setColumnPickerOpen(columnPickerMenu.hidden));
+columnOptionsEl.addEventListener("change", (event) => {
+  const input = event.target.closest("input[type='checkbox']");
+  if (!input || input.disabled) return;
+  const nextKeys = new Set(visibleColumnKeys);
+  if (input.checked) {
+    nextKeys.add(input.value);
+  } else {
+    nextKeys.delete(input.value);
+  }
+  applyColumnVisibility(nextKeys);
+});
+selectAllColumnsBtn.addEventListener("click", () => applyColumnVisibility(tableColumns.map((column) => column.key)));
+resetColumnsBtn.addEventListener("click", () => applyColumnVisibility(getDefaultColumnKeys()));
+document.addEventListener("click", (event) => {
+  if (!columnPickerEl.contains(event.target)) setColumnPickerOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setColumnPickerOpen(false);
+});
 selectAllTypesBtn.addEventListener("click", selectAllTypes);
 clearAllTypesBtn.addEventListener("click", clearAllTypes);
 showAllPurchaseLimitsBtn.addEventListener("click", () => setPurchaseLimitFilter(false));
@@ -928,10 +1219,11 @@ discountBelowInput.addEventListener("input", setPremiumThreshold);
 showAllPremiumsBtn.addEventListener("click", () => setPremiumFilter("all"));
 showPremiumAboveBtn.addEventListener("click", () => setPremiumFilter("premiumAbove"));
 showDiscountBelowBtn.addEventListener("click", () => setPremiumFilter("discountBelow"));
-sortableHeaders.forEach((header) => {
-  header.addEventListener("click", () => cycleSort(header.dataset.sortKey));
-});
-updateSortHeaders();
+autoScrollDetails = loadAutoScrollDetails();
+syncAutoScrollDetailsToggle();
+visibleColumnKeys = new Set(loadVisibleColumnKeys());
+renderColumnControls();
+renderTableStructure();
 renderPurchaseLimitFilter();
 renderPremiumFilter();
 loadFunds();
