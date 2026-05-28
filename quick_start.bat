@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 cd /d "%~dp0"
 set "URL=http://127.0.0.1:8000"
@@ -12,7 +12,7 @@ if "%~1"=="-h" goto help
 if not exist ".venv\" (
     call :find_python || goto failed
     echo Creating virtual environment...
-    %PYTHON% -m venv .venv || goto failed
+    !PYTHON! -m venv .venv || goto failed
 )
 
 if not exist "%VENV_PY%" (
