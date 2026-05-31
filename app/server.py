@@ -72,7 +72,7 @@ class Handler(SimpleHTTPRequestHandler):
             last_purchase_limits_refresh_at = get_meta(con, "last_purchase_limits_refresh_at")
             backtests_disabled = bool(get_meta(con, "backtests_disabled", False))
             if nav_cache_is_empty(con) or not last_navs_refresh_at:
-                refresh_navs(con, update_backtests=not backtests_disabled)
+                refresh_navs(con, update_backtests=False)
                 last_navs_refresh_at = get_meta(con, "last_navs_refresh_at")
                 last_navs_refresh_success_at = get_meta(con, "last_navs_refresh_success_at")
                 last_incremental_backtests_refresh_at = get_meta(con, "last_incremental_backtests_refresh_at")
@@ -116,13 +116,13 @@ class Handler(SimpleHTTPRequestHandler):
                 "data_alert_count": len(data_alerts),
                 "funds": funds,
             }
-        self.json(payload)
         if should_refresh_navs:
-            schedule_nav_refresh(update_backtests=not backtests_disabled)
+            payload["navs_refreshing"] = schedule_nav_refresh(update_backtests=False)
         if should_refresh_quotes:
-            schedule_quote_refresh(secids)
+            payload["quotes_refreshing"] = schedule_quote_refresh(secids)
         if should_refresh_purchase_limits:
-            schedule_purchase_limit_refresh()
+            payload["purchase_limits_refreshing"] = schedule_purchase_limit_refresh()
+        self.json(payload)
 
     def handle_holdings(self, code: str) -> None:
         with connect() as con:
@@ -317,28 +317,34 @@ def refresh_is_due(last_refresh_at: str | None, interval_seconds: int) -> bool:
     return (now - last_refresh).total_seconds() >= interval_seconds
 
 
-def schedule_quote_refresh(secids: list[str]) -> None:
+def schedule_quote_refresh(secids: list[str]) -> bool:
     global _quote_refresh_started_at
     now = time.monotonic()
+    if _quote_refresh_lock.locked():
+        return True
     if now - _quote_refresh_started_at < QUOTE_REFRESH_INTERVAL_SECONDS:
-        return
+        return False
     if not _quote_refresh_lock.acquire(blocking=False):
-        return
+        return True
     _quote_refresh_started_at = now
     thread = threading.Thread(target=refresh_quotes_in_background, args=(secids,), daemon=True)
     thread.start()
+    return True
 
 
-def schedule_nav_refresh(update_backtests: bool = True) -> None:
+def schedule_nav_refresh(update_backtests: bool = True) -> bool:
     global _nav_refresh_started_at
     now = time.monotonic()
+    if _nav_refresh_lock.locked():
+        return True
     if now - _nav_refresh_started_at < NAV_REFRESH_INTERVAL_SECONDS:
-        return
+        return False
     if not _nav_refresh_lock.acquire(blocking=False):
-        return
+        return True
     _nav_refresh_started_at = now
     thread = threading.Thread(target=refresh_navs_in_background, args=(update_backtests,), daemon=True)
     thread.start()
+    return True
 
 
 def refresh_navs_in_background(update_backtests: bool = True) -> None:
@@ -358,16 +364,19 @@ def refresh_quotes_in_background(secids: list[str]) -> None:
         _quote_refresh_lock.release()
 
 
-def schedule_purchase_limit_refresh() -> None:
+def schedule_purchase_limit_refresh() -> bool:
     global _purchase_limit_refresh_started_at
     now = time.monotonic()
+    if _purchase_limit_refresh_lock.locked():
+        return True
     if now - _purchase_limit_refresh_started_at < PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS:
-        return
+        return False
     if not _purchase_limit_refresh_lock.acquire(blocking=False):
-        return
+        return True
     _purchase_limit_refresh_started_at = now
     thread = threading.Thread(target=refresh_purchase_limits_in_background, daemon=True)
     thread.start()
+    return True
 
 
 def refresh_purchase_limits_in_background() -> None:

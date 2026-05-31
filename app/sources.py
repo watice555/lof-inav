@@ -235,14 +235,12 @@ def fetch_realtime_quotes(secids: list[str]) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     special = {"113.agm", *EASTMONEY_INDEX_SECIDS}
-    for secid in secids:
-        if secid == "113.agm":
-            quote = eastmoney_futures_quote(secid)
-            if quote:
-                rows.append(quote)
-        elif secid in EASTMONEY_INDEX_SECIDS:
+    special_secids = [secid for secid in secids if secid in special]
+    with ThreadPoolExecutor(max_workers=min(8, len(special_secids) or 1)) as executor:
+        futures = {executor.submit(special_realtime_quote, secid): secid for secid in special_secids}
+        for future in as_completed(futures):
             try:
-                quote = eastmoney_index_quote(secid)
+                quote = future.result()
                 if quote:
                     rows.append(quote)
             except RequestException:
@@ -277,6 +275,14 @@ def fetch_realtime_quotes(secids: list[str]) -> list[dict[str, Any]]:
             if quote:
                 rows.append(quote)
     return rows
+
+
+def special_realtime_quote(secid: str) -> dict[str, Any] | None:
+    if secid == "113.agm":
+        return eastmoney_futures_quote(secid)
+    if secid in EASTMONEY_INDEX_SECIDS:
+        return eastmoney_index_quote(secid)
+    return None
 
 
 def fallback_realtime_quote(secid: str) -> dict[str, Any] | None:
@@ -468,6 +474,8 @@ def eastmoney_futures_quote(secid: str) -> dict[str, Any] | None:
             "token": "1101ffec61617c99be287c1bec3085ff",
         },
         headers={"Referer": f"https://quote.eastmoney.com/unify/r/{secid}"},
+        timeout=3,
+        attempts=1,
     ).json()
     item = response.get("qt") or {}
     price = _to_float(item.get("p"))

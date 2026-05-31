@@ -62,6 +62,11 @@ const typeOrder = [
 const typeOrderRank = new Map(typeOrder.map((type, index) => [type, index]));
 const COLUMN_STORAGE_KEY = "lof-inav-visible-columns-v2";
 const DETAIL_SCROLL_STORAGE_KEY = "lof-inav-auto-scroll-details-v1";
+const REFRESH_POLL_DELAY_MS = 3_000;
+
+let refreshPollTimer = null;
+let loadFundsInFlight = false;
+let loadFundsQueued = false;
 
 const tableColumns = [
   {
@@ -405,30 +410,76 @@ function setColumnPickerOpen(open) {
   columnPickerBtn.setAttribute("aria-expanded", String(open));
 }
 
+function clearRefreshPoll() {
+  if (!refreshPollTimer) return;
+  window.clearTimeout(refreshPollTimer);
+  refreshPollTimer = null;
+}
+
+function scheduleRefreshPoll() {
+  if (refreshPollTimer) return;
+  refreshPollTimer = window.setTimeout(() => {
+    refreshPollTimer = null;
+    loadFunds();
+  }, REFRESH_POLL_DELAY_MS);
+}
+
+function isRefreshPending(data) {
+  return Boolean(data.navs_refreshing || data.quotes_refreshing || data.purchase_limits_refreshing);
+}
+
 async function loadFunds() {
+  if (loadFundsInFlight) {
+    loadFundsQueued = true;
+    return;
+  }
+
+  clearRefreshPoll();
+  loadFundsInFlight = true;
+  refreshBtn.disabled = true;
   stateEl.textContent = "刷新中...";
-  const res = await fetch("/api/funds");
-  const data = await res.json();
-  currentFunds = data.funds;
-  syncTypeFilters(currentFunds);
-  renderFunds(getVisibleFunds());
-  renderDataAlerts(data.data_alerts || [], data.data_alert_count || 0);
-  const navRefreshTime = data.last_navs_refresh_success_at
-    ? new Date(data.last_navs_refresh_success_at).toLocaleString()
-    : "未刷新";
-  const quoteRefreshTime = data.last_realtime_quotes_refresh_at
-    ? new Date(data.last_realtime_quotes_refresh_at).toLocaleString()
-    : "未刷新";
-  const refreshPrefix = [
-    data.navs_refreshing ? "净值刷新中" : "",
-    data.quotes_refreshing ? "行情刷新中" : "",
-  ]
-    .filter(Boolean)
-    .join("，");
-  const refreshState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime}`;
-  stateEl.textContent = refreshPrefix ? `${refreshPrefix}... ${refreshState}` : refreshState;
-  if (!currentCode && data.funds.length) {
-    showDetails(data.funds[0].code);
+
+  try {
+    const res = await fetch("/api/funds", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data.funds)) throw new Error("返回数据格式异常");
+
+    currentFunds = data.funds;
+    syncTypeFilters(currentFunds);
+    renderFunds(getVisibleFunds());
+    renderDataAlerts(data.data_alerts || [], data.data_alert_count || 0);
+    const navRefreshTime = data.last_navs_refresh_success_at
+      ? new Date(data.last_navs_refresh_success_at).toLocaleString()
+      : "未刷新";
+    const quoteRefreshTime = data.last_realtime_quotes_refresh_at
+      ? new Date(data.last_realtime_quotes_refresh_at).toLocaleString()
+      : "未刷新";
+    const refreshPrefix = [
+      data.navs_refreshing ? "净值刷新中" : "",
+      data.quotes_refreshing ? "行情刷新中" : "",
+      data.purchase_limits_refreshing ? "申购限额刷新中" : "",
+    ]
+      .filter(Boolean)
+      .join("，");
+    const refreshState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime}`;
+    stateEl.textContent = refreshPrefix ? `${refreshPrefix}... ${refreshState}` : refreshState;
+    if (!currentCode && data.funds.length) {
+      showDetails(data.funds[0].code);
+    }
+    if (isRefreshPending(data)) {
+      scheduleRefreshPoll();
+    }
+  } catch (error) {
+    console.error("刷新基金数据失败", error);
+    stateEl.textContent = `刷新失败：${error?.message || "未知错误"}`;
+  } finally {
+    loadFundsInFlight = false;
+    refreshBtn.disabled = false;
+    if (loadFundsQueued) {
+      loadFundsQueued = false;
+      loadFunds();
+    }
   }
 }
 
