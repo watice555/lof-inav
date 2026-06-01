@@ -29,6 +29,7 @@ _purchase_limit_refresh_lock = threading.Lock()
 _purchase_limit_refresh_started_at = 0.0
 _nav_refresh_lock = threading.Lock()
 _nav_refresh_started_at = 0.0
+_backtest_refresh_lock = threading.Lock()
 
 
 class SingleInstanceHTTPServer(ThreadingHTTPServer):
@@ -54,6 +55,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.handle_backtest(code)
             return
         super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/backtests/incremental":
+            self.handle_incremental_backtest_refresh()
+            return
+        self.send_error(404, "Not found")
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
@@ -112,6 +120,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "quotes_refreshing": should_refresh_quotes,
                 "purchase_limits_refreshing": should_refresh_purchase_limits,
                 "navs_refreshing": should_refresh_navs,
+                "backtests_refreshing": _backtest_refresh_lock.locked(),
                 "data_alerts": data_alerts[:50],
                 "data_alert_count": len(data_alerts),
                 "funds": funds,
@@ -122,6 +131,21 @@ class Handler(SimpleHTTPRequestHandler):
             payload["quotes_refreshing"] = schedule_quote_refresh(secids)
         if should_refresh_purchase_limits:
             payload["purchase_limits_refreshing"] = schedule_purchase_limit_refresh()
+        payload["backtests_refreshing"] = _backtest_refresh_lock.locked()
+        self.json(payload)
+
+    def handle_incremental_backtest_refresh(self) -> None:
+        started, message = schedule_incremental_backtest_refresh()
+        with connect() as con:
+            payload = {
+                "started": started,
+                "message": message,
+                "navs_refreshing": _nav_refresh_lock.locked(),
+                "backtests_refreshing": _backtest_refresh_lock.locked(),
+                "last_incremental_backtests_refresh_at": get_meta(
+                    con, "last_incremental_backtests_refresh_at"
+                ),
+            }
         self.json(payload)
 
     def handle_holdings(self, code: str) -> None:
@@ -347,12 +371,40 @@ def schedule_nav_refresh(update_backtests: bool = True) -> bool:
     return True
 
 
+def schedule_incremental_backtest_refresh() -> tuple[bool, str]:
+    global _nav_refresh_started_at
+    if _backtest_refresh_lock.locked():
+        return False, "增量回测已在刷新中"
+    if _nav_refresh_lock.locked():
+        return False, "净值刷新中，稍后再启动增量回测"
+    if not _backtest_refresh_lock.acquire(blocking=False):
+        return False, "增量回测已在刷新中"
+    if not _nav_refresh_lock.acquire(blocking=False):
+        _backtest_refresh_lock.release()
+        return False, "净值刷新中，稍后再启动增量回测"
+    now = time.monotonic()
+    _nav_refresh_started_at = now
+    thread = threading.Thread(target=refresh_incremental_backtests_in_background, daemon=True)
+    thread.start()
+    return True, "增量回测已开始"
+
+
 def refresh_navs_in_background(update_backtests: bool = True) -> None:
     try:
         with connect() as con:
             refresh_navs(con, update_backtests=update_backtests)
     finally:
         _nav_refresh_lock.release()
+
+
+def refresh_incremental_backtests_in_background() -> None:
+    try:
+        with connect() as con:
+            set_meta(con, "backtests_disabled", False)
+            refresh_navs(con, update_backtests=True)
+    finally:
+        _nav_refresh_lock.release()
+        _backtest_refresh_lock.release()
 
 
 def refresh_quotes_in_background(secids: list[str]) -> None:

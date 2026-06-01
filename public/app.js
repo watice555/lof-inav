@@ -2,6 +2,7 @@ const rowsEl = document.querySelector("#fundRows");
 const stateEl = document.querySelector("#refreshState");
 const dataAlertsEl = document.querySelector("#dataAlerts");
 const refreshBtn = document.querySelector("#refreshBtn");
+const backtestRefreshBtn = document.querySelector("#backtestRefreshBtn");
 const exportCsvBtn = document.querySelector("#exportCsvBtn");
 const exportPngBtn = document.querySelector("#exportPngBtn");
 const autoScrollDetailsToggle = document.querySelector("#autoScrollDetailsToggle");
@@ -67,6 +68,8 @@ const REFRESH_POLL_DELAY_MS = 3_000;
 let refreshPollTimer = null;
 let loadFundsInFlight = false;
 let loadFundsQueued = false;
+let backtestsRefreshing = false;
+let backtestRefreshInFlight = false;
 
 const tableColumns = [
   {
@@ -425,7 +428,12 @@ function scheduleRefreshPoll() {
 }
 
 function isRefreshPending(data) {
-  return Boolean(data.navs_refreshing || data.quotes_refreshing || data.purchase_limits_refreshing);
+  return Boolean(
+    data.navs_refreshing ||
+      data.quotes_refreshing ||
+      data.purchase_limits_refreshing ||
+      data.backtests_refreshing
+  );
 }
 
 async function loadFunds() {
@@ -437,6 +445,7 @@ async function loadFunds() {
   clearRefreshPoll();
   loadFundsInFlight = true;
   refreshBtn.disabled = true;
+  backtestRefreshBtn.disabled = true;
   stateEl.textContent = "刷新中...";
 
   try {
@@ -446,6 +455,8 @@ async function loadFunds() {
     if (!Array.isArray(data.funds)) throw new Error("返回数据格式异常");
 
     currentFunds = data.funds;
+    const wasBacktestsRefreshing = backtestsRefreshing;
+    backtestsRefreshing = Boolean(data.backtests_refreshing);
     syncTypeFilters(currentFunds);
     renderFunds(getVisibleFunds());
     renderDataAlerts(data.data_alerts || [], data.data_alert_count || 0);
@@ -455,17 +466,25 @@ async function loadFunds() {
     const quoteRefreshTime = data.last_realtime_quotes_refresh_at
       ? new Date(data.last_realtime_quotes_refresh_at).toLocaleString()
       : "未刷新";
+    const backtestRefreshTime = data.last_incremental_backtests_refresh_at
+      ? new Date(data.last_incremental_backtests_refresh_at).toLocaleString()
+      : data.backtests_disabled
+        ? "未启用"
+        : "未刷新";
     const refreshPrefix = [
       data.navs_refreshing ? "净值刷新中" : "",
       data.quotes_refreshing ? "行情刷新中" : "",
       data.purchase_limits_refreshing ? "申购限额刷新中" : "",
+      data.backtests_refreshing ? "回测刷新中" : "",
     ]
       .filter(Boolean)
       .join("，");
-    const refreshState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime}`;
+    const refreshState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 回测 ${backtestRefreshTime}`;
     stateEl.textContent = refreshPrefix ? `${refreshPrefix}... ${refreshState}` : refreshState;
     if (!currentCode && data.funds.length) {
       showDetails(data.funds[0].code);
+    } else if (currentCode && wasBacktestsRefreshing && !backtestsRefreshing) {
+      showDetails(currentCode);
     }
     if (isRefreshPending(data)) {
       scheduleRefreshPoll();
@@ -476,10 +495,38 @@ async function loadFunds() {
   } finally {
     loadFundsInFlight = false;
     refreshBtn.disabled = false;
+    backtestRefreshBtn.disabled = backtestRefreshInFlight || backtestsRefreshing;
     if (loadFundsQueued) {
       loadFundsQueued = false;
       loadFunds();
     }
+  }
+}
+
+async function refreshIncrementalBacktests() {
+  if (backtestRefreshInFlight || backtestsRefreshing) return;
+
+  clearRefreshPoll();
+  backtestRefreshInFlight = true;
+  backtestRefreshBtn.disabled = true;
+  stateEl.textContent = "启动增量回测...";
+
+  try {
+    const res = await fetch("/api/backtests/incremental", {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    backtestsRefreshing = Boolean(data.backtests_refreshing);
+    stateEl.textContent = data.message || "增量回测请求已发送";
+    await loadFunds();
+  } catch (error) {
+    console.error("启动增量回测失败", error);
+    stateEl.textContent = `增量回测失败：${error?.message || "未知错误"}`;
+  } finally {
+    backtestRefreshInFlight = false;
+    backtestRefreshBtn.disabled = backtestsRefreshing;
   }
 }
 
@@ -1233,6 +1280,7 @@ async function exportPng() {
 }
 
 refreshBtn.addEventListener("click", loadFunds);
+backtestRefreshBtn.addEventListener("click", refreshIncrementalBacktests);
 dataAlertsEl?.addEventListener("click", (event) => {
   const item = event.target.closest("[data-alert-code]");
   if (!item) return;
