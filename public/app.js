@@ -1,5 +1,8 @@
 const rowsEl = document.querySelector("#fundRows");
 const stateEl = document.querySelector("#refreshState");
+const refreshProgressEl = document.querySelector("#refreshProgress");
+const refreshProgressBarEl = document.querySelector("#refreshProgressBar");
+const refreshProgressTextEl = document.querySelector("#refreshProgressText");
 const dataAlertsEl = document.querySelector("#dataAlerts");
 const refreshBtn = document.querySelector("#refreshBtn");
 const backtestRefreshBtn = document.querySelector("#backtestRefreshBtn");
@@ -36,6 +39,9 @@ let currentCode = null;
 let currentFunds = [];
 let availableTypes = [];
 let selectedTypes = new Set();
+let dataAlertsExpanded = false;
+let lastDataAlerts = [];
+let lastDataAlertCount = 0;
 let hidePausedPurchase = false;
 let premiumFilterMode = "all";
 let autoScrollDetails = true;
@@ -61,15 +67,31 @@ const typeOrder = [
 ];
 
 const typeOrderRank = new Map(typeOrder.map((type, index) => [type, index]));
+const defaultExcludedTypePrefixes = ["A股-"];
 const COLUMN_STORAGE_KEY = "lof-inav-visible-columns-v2";
 const DETAIL_SCROLL_STORAGE_KEY = "lof-inav-auto-scroll-details-v1";
 const REFRESH_POLL_DELAY_MS = 3_000;
+const ACTIVE_REFRESH_DELAY_MS = 60_000;
+const INACTIVE_REFRESH_DELAY_MS = 30 * 60_000;
+const ACTIVE_GRACE_MS = 5 * 60_000;
+const ACTIVITY_EVENTS = ["click", "keydown", "mousemove", "scroll", "touchstart"];
+const TABLE_RENDER_CHUNK_SIZE = 80;
+const DATA_ALERT_COLLAPSED_ROWS = 5;
+const DATA_ALERT_ITEMS_PER_ROW = 2;
+const DATA_ALERT_COLLAPSED_LIMIT = DATA_ALERT_COLLAPSED_ROWS * DATA_ALERT_ITEMS_PER_ROW;
 
 let refreshPollTimer = null;
+let autoRefreshTimer = null;
+let lastUserActivityAt = Date.now();
+let lastFundsLoadAt = 0;
 let loadFundsInFlight = false;
 let loadFundsQueued = false;
 let backtestsRefreshing = false;
 let backtestRefreshInFlight = false;
+let csrfToken = null;
+let detailRequestId = 0;
+let detailAbortController = null;
+let tableRenderToken = 0;
 
 const tableColumns = [
   {
@@ -82,7 +104,10 @@ const tableColumns = [
     defaultVisible: true,
     sortValue: (fund) => fund.code,
     cell: (fund) => `
-      <div class="fund-name">${escapeHtml(fund.name || "--")}</div>
+      <div class="fund-name-row">
+        <div class="fund-name">${escapeHtml(fund.name || "--")}</div>
+        ${renderFundStatus(fund)}
+      </div>
       <div class="fund-code">${escapeHtml(fund.code || "--")} / ${escapeHtml(fund.nav_date || "--")}</div>
     `,
     exportCell: (fund) => [fund.name || "--", `${fund.code || "--"} / ${fund.nav_date || "--"}`],
@@ -272,6 +297,16 @@ function getTradeQuoteUrl(fund) {
   return secid ? `https://quote.eastmoney.com/unify/r/${encodeURIComponent(secid)}` : "";
 }
 
+function isFundError(fund) {
+  return fund.status === "error";
+}
+
+function renderFundStatus(fund) {
+  if (!isFundError(fund)) return "";
+  const title = fund.error || "估值失败";
+  return `<span class="fund-status-badge" title="${escapeHtml(title)}">估值失败</span>`;
+}
+
 function inferTradeSecid(code) {
   if (!/^\d{6}$/.test(String(code || ""))) return "";
   const market = String(code).startsWith("5") ? "1" : "0";
@@ -419,12 +454,65 @@ function clearRefreshPoll() {
   refreshPollTimer = null;
 }
 
+function clearAutoRefresh() {
+  if (!autoRefreshTimer) return;
+  window.clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = null;
+}
+
+function isPageVisible() {
+  return document.visibilityState !== "hidden";
+}
+
+function isPageActive(now = Date.now()) {
+  return isPageVisible() && now - lastUserActivityAt <= ACTIVE_GRACE_MS;
+}
+
+function autoRefreshDelay(now = Date.now()) {
+  const interval = isPageActive(now) ? ACTIVE_REFRESH_DELAY_MS : INACTIVE_REFRESH_DELAY_MS;
+  const elapsed = lastFundsLoadAt ? now - lastFundsLoadAt : interval;
+  return Math.max(0, interval - elapsed);
+}
+
+function scheduleAutoRefresh() {
+  clearAutoRefresh();
+  autoRefreshTimer = window.setTimeout(() => {
+    autoRefreshTimer = null;
+    if (autoRefreshDelay() <= 0) {
+      loadFunds();
+    } else {
+      scheduleAutoRefresh();
+    }
+  }, autoRefreshDelay());
+}
+
 function scheduleRefreshPoll() {
   if (refreshPollTimer) return;
   refreshPollTimer = window.setTimeout(() => {
     refreshPollTimer = null;
     loadFunds();
-  }, REFRESH_POLL_DELAY_MS);
+  }, isPageActive() ? REFRESH_POLL_DELAY_MS : INACTIVE_REFRESH_DELAY_MS);
+}
+
+function markUserActive() {
+  const wasActive = isPageActive();
+  lastUserActivityAt = Date.now();
+  if (!wasActive && isPageActive()) {
+    clearAutoRefresh();
+    loadFunds();
+    return;
+  }
+  if (!autoRefreshTimer) scheduleAutoRefresh();
+}
+
+function handleVisibilityChange() {
+  if (isPageVisible()) {
+    lastUserActivityAt = Date.now();
+    clearAutoRefresh();
+    loadFunds();
+    return;
+  }
+  scheduleAutoRefresh();
 }
 
 function isRefreshPending(data) {
@@ -436,6 +524,141 @@ function isRefreshPending(data) {
   );
 }
 
+function refreshTimeText(value, emptyText = "未刷新") {
+  return value ? new Date(value).toLocaleString() : emptyText;
+}
+
+function compactRefreshTimeText(value, emptyText = "未刷新") {
+  if (!value) return emptyText;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${hour}:${minute}`;
+}
+
+function compactDateText(value) {
+  if (!value) return "--";
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) return `${match[2]}-${match[3]}`;
+  return String(value);
+}
+
+function backtestDataText(status, disabled) {
+  if (disabled) return "未启用";
+  if (!status || status.fund_count === 0) return "无数据";
+  if (status.missing_count === status.fund_count) return "无数据";
+
+  let range = "无数据";
+  if (status.oldest_latest_date && status.latest_date) {
+    range =
+      status.oldest_latest_date === status.latest_date
+        ? status.latest_date
+        : `${status.oldest_latest_date} 至 ${status.latest_date}`;
+  }
+  const parts = [range];
+  if (status.stale_count) parts.push(`滞后 ${status.stale_count} 只`);
+  if (status.missing_count) parts.push(`缺失 ${status.missing_count} 只`);
+  return parts.join("，");
+}
+
+function compactBacktestDataText(status, disabled) {
+  if (disabled) return "未启用";
+  if (!status || status.fund_count === 0) return "无数据";
+  if (status.missing_count === status.fund_count) return "无数据";
+
+  let range = "无数据";
+  if (status.oldest_latest_date && status.latest_date) {
+    const oldest = compactDateText(status.oldest_latest_date);
+    const latest = compactDateText(status.latest_date);
+    range = oldest === latest ? latest : `${oldest}~${latest}`;
+  }
+  const parts = [range];
+  if (status.stale_count) parts.push(`滞后${status.stale_count}`);
+  if (status.missing_count) parts.push(`缺${status.missing_count}`);
+  return parts.join(" ");
+}
+
+function setRefreshState(text, title = text) {
+  stateEl.textContent = text;
+  stateEl.title = title || text;
+}
+
+function refreshProgressPercent(progress) {
+  const percent = Number(progress?.percent);
+  if (Number.isFinite(percent)) return Math.max(0, Math.min(100, Math.round(percent)));
+  const completed = Number(progress?.completed);
+  const total = Number(progress?.total);
+  if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+    return Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+  }
+  return null;
+}
+
+function refreshProgressLabel(progress) {
+  if (!progress) return "";
+  const label = progress.label || (progress.kind === "quotes" ? "行情" : "回测");
+  const percent = refreshProgressPercent(progress);
+  return percent === null ? `${label}中` : `${label} ${percent}%`;
+}
+
+function renderRefreshProgress(progress, pending) {
+  if (!refreshProgressEl || !refreshProgressBarEl || !refreshProgressTextEl) return;
+  const percent = refreshProgressPercent(progress);
+  if (!progress || (!pending && progress.status !== "running")) {
+    refreshProgressEl.hidden = true;
+    refreshProgressEl.classList.remove("is-indeterminate");
+    refreshProgressBarEl.style.width = "0%";
+    refreshProgressTextEl.textContent = "--";
+    return;
+  }
+
+  refreshProgressEl.hidden = false;
+  refreshProgressEl.title = [
+    progress.label || "",
+    progress.message || "",
+    progress.elapsed_seconds ? `耗时 ${progress.elapsed_seconds}s` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  refreshProgressEl.classList.toggle("is-indeterminate", percent === null);
+  refreshProgressBarEl.style.width = percent === null ? "42%" : `${percent}%`;
+  refreshProgressTextEl.textContent = percent === null ? "..." : `${percent}%`;
+}
+
+function renderRefreshState(data) {
+  const navRefreshTime = refreshTimeText(data.last_navs_refresh_success_at);
+  const quoteRefreshTime = refreshTimeText(data.last_realtime_quotes_refresh_at);
+  const backtestRefreshTime = refreshTimeText(
+    data.last_incremental_backtests_refresh_at,
+    data.backtests_disabled ? "未启用" : "未刷新"
+  );
+  const backtestDataRange = backtestDataText(data.backtest_status, data.backtests_disabled);
+  const progressLabel = refreshProgressLabel(data.refresh_progress);
+  const refreshPrefix = [
+    progressLabel && isRefreshPending(data) ? progressLabel : "",
+    !progressLabel && data.navs_refreshing ? "净值刷新中" : "",
+    !progressLabel && data.quotes_refreshing ? "行情刷新中" : "",
+    !progressLabel && data.purchase_limits_refreshing ? "申购限额刷新中" : "",
+    !progressLabel && data.backtests_refreshing ? "回测刷新中" : "",
+  ]
+    .filter(Boolean)
+    .join("，");
+  const fullState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 回测任务 ${backtestRefreshTime} / 回测数据 ${backtestDataRange}`;
+
+  const compactParts = [
+    `净值 ${compactRefreshTimeText(data.last_navs_refresh_success_at)}`,
+    `行情 ${compactRefreshTimeText(data.last_realtime_quotes_refresh_at)}`,
+    `回测 ${compactRefreshTimeText(data.last_incremental_backtests_refresh_at, data.backtests_disabled ? "未启用" : "未刷新")}`,
+    `数据 ${compactBacktestDataText(data.backtest_status, data.backtests_disabled)}`,
+  ];
+  const compactState = compactParts.join(" · ");
+  setRefreshState(
+    refreshPrefix ? `${refreshPrefix} · ${compactState}` : compactState,
+    refreshPrefix ? `${refreshPrefix}... ${fullState}` : fullState
+  );
+}
+
 async function loadFunds() {
   if (loadFundsInFlight) {
     loadFundsQueued = true;
@@ -443,10 +666,12 @@ async function loadFunds() {
   }
 
   clearRefreshPoll();
+  clearAutoRefresh();
+  lastFundsLoadAt = Date.now();
   loadFundsInFlight = true;
   refreshBtn.disabled = true;
   backtestRefreshBtn.disabled = true;
-  stateEl.textContent = "刷新中...";
+  setRefreshState("刷新中...");
 
   try {
     const res = await fetch("/api/funds", { cache: "no-store" });
@@ -454,44 +679,28 @@ async function loadFunds() {
     const data = await res.json();
     if (!Array.isArray(data.funds)) throw new Error("返回数据格式异常");
 
+    if (data.csrf_token) csrfToken = data.csrf_token;
     currentFunds = data.funds;
     const wasBacktestsRefreshing = backtestsRefreshing;
     backtestsRefreshing = Boolean(data.backtests_refreshing);
+    const refreshPending = isRefreshPending(data);
     syncTypeFilters(currentFunds);
     renderFunds(getVisibleFunds());
     renderDataAlerts(data.data_alerts || [], data.data_alert_count || 0);
-    const navRefreshTime = data.last_navs_refresh_success_at
-      ? new Date(data.last_navs_refresh_success_at).toLocaleString()
-      : "未刷新";
-    const quoteRefreshTime = data.last_realtime_quotes_refresh_at
-      ? new Date(data.last_realtime_quotes_refresh_at).toLocaleString()
-      : "未刷新";
-    const backtestRefreshTime = data.last_incremental_backtests_refresh_at
-      ? new Date(data.last_incremental_backtests_refresh_at).toLocaleString()
-      : data.backtests_disabled
-        ? "未启用"
-        : "未刷新";
-    const refreshPrefix = [
-      data.navs_refreshing ? "净值刷新中" : "",
-      data.quotes_refreshing ? "行情刷新中" : "",
-      data.purchase_limits_refreshing ? "申购限额刷新中" : "",
-      data.backtests_refreshing ? "回测刷新中" : "",
-    ]
-      .filter(Boolean)
-      .join("，");
-    const refreshState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 回测 ${backtestRefreshTime}`;
-    stateEl.textContent = refreshPrefix ? `${refreshPrefix}... ${refreshState}` : refreshState;
+    renderRefreshProgress(data.refresh_progress, refreshPending);
+    renderRefreshState(data);
     if (!currentCode && data.funds.length) {
       showDetails(data.funds[0].code);
     } else if (currentCode && wasBacktestsRefreshing && !backtestsRefreshing) {
       showDetails(currentCode);
     }
-    if (isRefreshPending(data)) {
+    if (refreshPending) {
       scheduleRefreshPoll();
     }
   } catch (error) {
     console.error("刷新基金数据失败", error);
-    stateEl.textContent = `刷新失败：${error?.message || "未知错误"}`;
+    renderRefreshProgress(null, false);
+    setRefreshState(`刷新失败：${error?.message || "未知错误"}`);
   } finally {
     loadFundsInFlight = false;
     refreshBtn.disabled = false;
@@ -499,7 +708,9 @@ async function loadFunds() {
     if (loadFundsQueued) {
       loadFundsQueued = false;
       loadFunds();
+      return;
     }
+    scheduleAutoRefresh();
   }
 }
 
@@ -509,21 +720,33 @@ async function refreshIncrementalBacktests() {
   clearRefreshPoll();
   backtestRefreshInFlight = true;
   backtestRefreshBtn.disabled = true;
-  stateEl.textContent = "启动增量回测...";
+  setRefreshState("启动增量回测...");
 
   try {
+    if (!csrfToken) {
+      setRefreshState("获取本地会话...");
+      await loadFunds();
+      if (!csrfToken) throw new Error("缺少本地会话令牌");
+    }
     const res = await fetch("/api/backtests/incremental", {
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-LOF-CSRF": csrfToken,
+      },
+      body: "{}",
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     backtestsRefreshing = Boolean(data.backtests_refreshing);
-    stateEl.textContent = data.message || "增量回测请求已发送";
+    renderRefreshProgress(data.refresh_progress, backtestsRefreshing);
+    setRefreshState(data.message || "增量回测请求已发送");
     await loadFunds();
   } catch (error) {
     console.error("启动增量回测失败", error);
-    stateEl.textContent = `增量回测失败：${error?.message || "未知错误"}`;
+    renderRefreshProgress(null, false);
+    setRefreshState(`增量回测失败：${error?.message || "未知错误"}`);
   } finally {
     backtestRefreshInFlight = false;
     backtestRefreshBtn.disabled = backtestsRefreshing;
@@ -532,23 +755,31 @@ async function refreshIncrementalBacktests() {
 
 function renderDataAlerts(alerts, totalCount) {
   if (!dataAlertsEl) return;
+  lastDataAlerts = alerts;
+  lastDataAlertCount = totalCount;
   if (!alerts.length) {
     dataAlertsEl.hidden = true;
     dataAlertsEl.innerHTML = "";
     return;
   }
   dataAlertsEl.hidden = false;
-  const hiddenCount = Math.max(0, totalCount - alerts.length);
+  const displayedAlerts = dataAlertsExpanded ? alerts : alerts.slice(0, DATA_ALERT_COLLAPSED_LIMIT);
+  const collapsedCount = Math.max(0, alerts.length - displayedAlerts.length);
+  const canToggle = alerts.length > DATA_ALERT_COLLAPSED_LIMIT;
   dataAlertsEl.innerHTML = `
     <div class="data-alert-header">
       <div>
         <h2>数据警报</h2>
         <p>${escapeHtml(totalCount)} 个基金或数据项需要检查</p>
       </div>
+      ${
+        canToggle
+          ? `<button class="data-alert-toggle" type="button" data-alert-toggle>${dataAlertsExpanded ? "收起" : `展开其余 ${collapsedCount} 条`}</button>`
+          : ""
+      }
     </div>
     <div class="data-alert-list">
-      ${alerts.map(renderDataAlert).join("")}
-      ${hiddenCount ? `<div class="data-alert-more">还有 ${hiddenCount} 条未展示</div>` : ""}
+      ${displayedAlerts.map(renderDataAlert).join("")}
     </div>
   `;
 }
@@ -558,6 +789,7 @@ function renderDataAlert(alert) {
   return `
     <button class="data-alert-item" type="button" title="${escapeHtml(details)}" data-alert-code="${escapeHtml(alert.code)}">
       <span class="data-alert-code">${escapeHtml(alert.code)}</span>
+      ${alert.fund_type ? `<span class="data-alert-type">${escapeHtml(alert.fund_type)}</span>` : ""}
       <span>${escapeHtml(alert.message)}</span>
     </button>
   `;
@@ -640,7 +872,7 @@ function syncTypeFilters(funds) {
   availableTypes = nextTypes;
 
   if (!hadTypes) {
-    selectedTypes = new Set(availableTypes);
+    selectedTypes = new Set(availableTypes.filter(isDefaultSelectedType));
   } else {
     selectedTypes = new Set([...selectedTypes].filter((type) => availableTypes.includes(type)));
     availableTypes.forEach((type) => {
@@ -649,6 +881,10 @@ function syncTypeFilters(funds) {
   }
 
   renderTypeFilters();
+}
+
+function isDefaultSelectedType(type) {
+  return !defaultExcludedTypePrefixes.some((prefix) => String(type).startsWith(prefix));
 }
 
 function compareTypes(a, b) {
@@ -829,7 +1065,45 @@ function updateSortHeaders() {
   });
 }
 
+function scheduleTableRender(callback) {
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(callback);
+    return;
+  }
+  setTimeout(callback, 0);
+}
+
+function renderFundRow(fund, columns) {
+  const rowClass = isFundError(fund) ? ` class="fund-row-error"` : "";
+  return `
+    <tr data-code="${escapeHtml(fund.code)}"${rowClass}>
+      ${columns
+        .map((column) => {
+          const alignClass = column.align === "left" ? " align-left" : "";
+          return `<td class="${alignClass.trim()}">${column.cell(fund)}</td>`;
+        })
+        .join("")}
+    </tr>
+  `;
+}
+
+function appendFundRowsChunk(funds, columns, startIndex, renderToken) {
+  if (renderToken !== tableRenderToken) return;
+  const endIndex = Math.min(startIndex + TABLE_RENDER_CHUNK_SIZE, funds.length);
+  rowsEl.insertAdjacentHTML(
+    "beforeend",
+    funds
+      .slice(startIndex, endIndex)
+      .map((fund) => renderFundRow(fund, columns))
+      .join("")
+  );
+  if (endIndex < funds.length) {
+    scheduleTableRender(() => appendFundRowsChunk(funds, columns, endIndex, renderToken));
+  }
+}
+
 function renderFunds(funds) {
+  const renderToken = ++tableRenderToken;
   const columns = getVisibleColumns();
   if (!funds.length) {
     rowsEl.innerHTML = `
@@ -840,26 +1114,8 @@ function renderFunds(funds) {
     return;
   }
 
-  rowsEl.innerHTML = funds
-    .map(
-      (fund) => `
-        <tr data-code="${escapeHtml(fund.code)}">
-          ${columns
-            .map((column) => {
-              const alignClass = column.align === "left" ? " align-left" : "";
-              return `<td class="${alignClass.trim()}">${column.cell(fund)}</td>`;
-            })
-            .join("")}
-        </tr>
-      `
-    )
-    .join("");
-  [...rowsEl.querySelectorAll("tr")].forEach((row) => {
-    row.addEventListener("click", (event) => {
-      if (event.target.closest("a")) return;
-      showDetails(row.dataset.code, { scrollToDetails: autoScrollDetails });
-    });
-  });
+  rowsEl.innerHTML = "";
+  appendFundRowsChunk(funds, columns, 0, renderToken);
 }
 
 function renderPurchaseLimit(purchaseLimit) {
@@ -892,17 +1148,37 @@ function getAnnouncementPdfUrl(announcement) {
 
 async function showDetails(code, options = {}) {
   currentCode = code;
-  const [holdingsRes, backtestRes] = await Promise.all([
-    fetch(`/api/funds/${code}/holdings`),
-    fetch(`/api/funds/${code}/backtest`),
-  ]);
-  const holdings = await holdingsRes.json();
-  const backtest = await backtestRes.json();
-  holdingsEl.innerHTML = renderHoldings(holdings.holdings);
-  backtestEl.innerHTML = renderBacktest(backtest.rows);
-  if (options.scrollToDetails) {
-    scrollToDetails();
+  const requestId = ++detailRequestId;
+  if (detailAbortController) detailAbortController.abort();
+  detailAbortController = new AbortController();
+  holdingsEl.innerHTML = `<div class="muted">加载中...</div>`;
+  backtestEl.innerHTML = `<div class="muted">加载中...</div>`;
+  try {
+    const [holdings, backtest] = await Promise.all([
+      fetchJson(`/api/funds/${code}/holdings`, { signal: detailAbortController.signal }),
+      fetchJson(`/api/funds/${code}/backtest`, { signal: detailAbortController.signal }),
+    ]);
+    if (requestId !== detailRequestId) return;
+    holdingsEl.innerHTML = renderHoldings(holdings.holdings || []);
+    backtestEl.innerHTML = renderBacktest(backtest.rows || []);
+    if (options.scrollToDetails) {
+      scrollToDetails();
+    }
+  } catch (error) {
+    if (error?.name === "AbortError" || requestId !== detailRequestId) return;
+    console.error("加载基金详情失败", error);
+    const message = escapeHtml(error?.message || "未知错误");
+    holdingsEl.innerHTML = `<div class="muted">加载失败：${message}</div>`;
+    backtestEl.innerHTML = `<div class="muted">加载失败：${message}</div>`;
+  } finally {
+    if (requestId === detailRequestId) detailAbortController = null;
   }
+}
+
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, { cache: "no-store", ...options });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 function scrollToDetails() {
@@ -964,7 +1240,7 @@ function renderBacktest(rows) {
             <td>${navWithChange(row.estimated_nav, row.previous_nav)}</td>
             <td>${signedPct(row.error_pct)}</td>
             <td>${pct(row.covered_weight)}</td>
-            <td>${renderBacktestQuality(row.price_diagnostics)}</td>
+            <td>${renderBacktestQuality(row)}</td>
           </tr>`
           )
           .join("")}
@@ -973,7 +1249,11 @@ function renderBacktest(rows) {
   `;
 }
 
-function renderBacktestQuality(diagnostics) {
+function renderBacktestQuality(row) {
+  const diagnostics = row?.price_diagnostics;
+  if (row?.data_quality === "low_coverage") {
+    return `<span class="quality-warn">低覆盖 ${pct(row.covered_weight)}</span>`;
+  }
   if (!diagnostics) return "--";
   const assetWeight = Number(diagnostics.asset_stale_weight || 0);
   const marketClosedWeight = Number(diagnostics.asset_market_closed_weight || 0);
@@ -1281,7 +1561,19 @@ async function exportPng() {
 
 refreshBtn.addEventListener("click", loadFunds);
 backtestRefreshBtn.addEventListener("click", refreshIncrementalBacktests);
+rowsEl.addEventListener("click", (event) => {
+  if (event.target.closest("a")) return;
+  const row = event.target.closest("tr[data-code]");
+  if (!row) return;
+  showDetails(row.dataset.code, { scrollToDetails: autoScrollDetails });
+});
 dataAlertsEl?.addEventListener("click", (event) => {
+  const toggle = event.target.closest("[data-alert-toggle]");
+  if (toggle) {
+    dataAlertsExpanded = !dataAlertsExpanded;
+    renderDataAlerts(lastDataAlerts, lastDataAlertCount);
+    return;
+  }
   const item = event.target.closest("[data-alert-code]");
   if (!item) return;
   showDetails(item.dataset.alertCode, { scrollToDetails: autoScrollDetails });
@@ -1309,6 +1601,10 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") setColumnPickerOpen(false);
 });
+ACTIVITY_EVENTS.forEach((eventName) => {
+  window.addEventListener(eventName, markUserActive, { passive: true });
+});
+document.addEventListener("visibilitychange", handleVisibilityChange);
 selectAllTypesBtn.addEventListener("click", selectAllTypes);
 clearAllTypesBtn.addEventListener("click", clearAllTypes);
 showAllPurchaseLimitsBtn.addEventListener("click", () => setPurchaseLimitFilter(false));
@@ -1326,4 +1622,3 @@ renderTableStructure();
 renderPurchaseLimitFilter();
 renderPremiumFilter();
 loadFunds();
-setInterval(loadFunds, 60_000);

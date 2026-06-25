@@ -85,6 +85,7 @@ create table if not exists backtests (
     estimated_nav real not null,
     error_pct real not null,
     covered_weight real not null,
+    data_quality text not null default 'ok',
     primary key (fund_code, date)
 );
 
@@ -125,6 +126,7 @@ def init_db() -> None:
         _ensure_column(con, "holdings", "publish_date", "text")
         _ensure_column(con, "navs", "distribution", "real default 0")
         _ensure_column(con, "funds", "fund_type", "text not null default '其他'")
+        _ensure_column(con, "backtests", "data_quality", "text not null default 'ok'")
 
 
 def _ensure_column(con: sqlite3.Connection, table: str, column: str, column_type: str) -> None:

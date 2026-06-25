@@ -37,6 +37,10 @@ body {
   margin-bottom: 18px;
 }
 
+.topbar > div:first-child {
+  flex: 0 0 210px;
+}
+
 h1,
 h2,
 p {
@@ -58,13 +62,85 @@ h2 {
   color: var(--muted);
 }
 
+.topbar p {
+  white-space: nowrap;
+}
+
 .status {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
   gap: 12px;
+  justify-content: flex-end;
+  min-width: 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+#refreshState {
+  flex: 1 1 auto;
+  min-width: 160px;
+  max-width: 760px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refresh-progress {
+  display: flex;
+  align-items: center;
+  flex: 0 0 136px;
+  gap: 6px;
+  min-width: 112px;
+}
+
+.refresh-progress[hidden] {
+  display: none;
+}
+
+.refresh-progress-track {
+  flex: 1 1 auto;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe8f5;
+}
+
+.refresh-progress-bar {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f75bd;
+  transition: width 180ms ease;
+}
+
+.refresh-progress-text {
+  flex: 0 0 34px;
+  color: #415064;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.refresh-progress.is-indeterminate .refresh-progress-bar {
+  animation: refresh-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes refresh-progress-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.status > button,
+.status > label,
+.status > .column-picker {
+  flex: 0 0 auto;
 }
 
 button {
@@ -200,17 +276,25 @@ button {
   font-size: 13px;
 }
 
+.data-alert-toggle {
+  height: 30px;
+  border-color: #e7b76e;
+  background: #fff6df;
+  color: #7a4306;
+  white-space: nowrap;
+}
+
 .data-alert-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .data-alert-item {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 420px;
+  width: 100%;
   height: auto;
   min-height: 30px;
   border-color: #e7b76e;
@@ -220,8 +304,22 @@ button {
   text-align: left;
 }
 
+.data-alert-item span:last-child {
+  min-width: 0;
+}
+
 .data-alert-code {
   font-weight: 800;
+}
+
+.data-alert-type {
+  flex: 0 0 auto;
+  border: 1px solid #e7b76e;
+  border-radius: 999px;
+  color: #8a4b08;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .filters {
@@ -517,8 +615,38 @@ button:disabled {
   background: #f2f6fb;
 }
 
+.fund-table tbody tr.fund-row-error {
+  background: #fffaf0;
+  box-shadow: inset 3px 0 0 #e7b76e;
+}
+
+.fund-table tbody tr.fund-row-error:hover {
+  background: #fff6df;
+}
+
+.fund-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .fund-name {
   font-weight: 700;
+}
+
+.fund-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  border: 1px solid #e7b76e;
+  border-radius: 999px;
+  background: #fff6df;
+  color: #8a4b08;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .fund-code {
@@ -780,8 +908,18 @@ button:disabled {
   }
 
   .status {
+    flex-wrap: wrap;
     justify-content: space-between;
     margin-top: 12px;
+  }
+
+  #refreshState {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .refresh-progress {
+    flex: 1 1 120px;
   }
 
   .filter-actions {

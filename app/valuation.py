@@ -11,6 +11,9 @@ from .config import FUNDS, FX_MIDPOINT_SECIDS, FX_SECID_OVERRIDES, US_EQUITY_CLO
 from .market_calendar import expected_market_closure_gap
 
 
+MIN_BACKTEST_COVERED_WEIGHT = 0.6
+
+
 def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     fund = con.execute("select * from funds where code = ?", (code,)).fetchone()
     if not fund:
@@ -34,7 +37,9 @@ def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     ).fetchone()
     holdings = latest_holdings(con, code)
     latest_nav_date = latest_nav["date"] if latest_nav else None
-    weighted_return, covered_weight, missing = realtime_weighted_return(con, holdings, latest_nav_date)
+    weighted_return, covered_weight, missing, realtime_warnings = realtime_weighted_return(
+        con, holdings, latest_nav_date
+    )
     estimate = latest_nav["nav"] * (1 + weighted_return) if latest_nav else None
     trade_price = quote["price"] if quote else None
     if trade_price is not None and trade_price <= 0:
@@ -54,6 +59,7 @@ def estimate_intraday(con: sqlite3.Connection, code: str) -> dict[str, Any]:
         "covered_weight": covered_weight,
         "missing_weight": max(0.0, 1 - covered_weight),
         "missing_quotes": missing,
+        "realtime_warnings": realtime_warnings,
         "note": fund["note"],
         "quote_time": quote["quote_time"] if quote else None,
         "announcement": dict(announcement) if announcement else None,
@@ -79,46 +85,108 @@ def latest_holdings(con: sqlite3.Connection, code: str) -> list[sqlite3.Row]:
 
 def realtime_weighted_return(
     con: sqlite3.Connection, holdings: list[sqlite3.Row], base_date: str | None = None
-) -> tuple[float, float, list[str]]:
+) -> tuple[float, float, list[str], list[dict[str, Any]]]:
     total = 0.0
     covered = 0.0
     missing = []
+    warnings = []
     for holding in holdings:
-        asset_ret = realtime_asset_return(con, holding["secid"], base_date)
+        asset_ret, asset_warning = realtime_asset_return_with_warning(con, holding["secid"], base_date)
+        if asset_warning:
+            warnings.append(_holding_warning(holding, "asset", asset_warning))
         if asset_ret is None:
             missing.append(holding["secid"])
             continue
-        fx_ret = realtime_fx_return(con, holding["secid"], base_date)
+        fx_ret, fx_warning = realtime_fx_return_with_warning(con, holding["secid"], base_date)
+        if fx_warning:
+            warnings.append(_holding_warning(holding, "fx", fx_warning))
         total += holding["weight"] * ((1 + asset_ret) * (1 + fx_ret) - 1)
         covered += holding["weight"]
-    return total, covered, missing
+    return total, covered, missing, warnings
 
 
 def realtime_asset_return(con: sqlite3.Connection, secid: str, base_date: str | None = None) -> float | None:
+    asset_ret, _warning = realtime_asset_return_with_warning(con, secid, base_date)
+    return asset_ret
+
+
+def realtime_asset_return_with_warning(
+    con: sqlite3.Connection, secid: str, base_date: str | None = None
+) -> tuple[float | None, dict[str, Any] | None]:
     quote = con.execute("select * from quotes where secid = ?", (secid,)).fetchone()
     if not quote:
-        return None
-    return realtime_quote_return(con, secid, quote, base_date)
+        return None, {
+            "type": "quote_missing",
+            "secid": secid,
+            "base_date": base_date,
+            "message": "资产实时行情缺失",
+        }
+    return realtime_quote_return_with_warning(con, secid, quote, base_date)
 
 
 def realtime_fx_return(con: sqlite3.Connection, secid: str, base_date: str | None = None) -> float:
+    fx_ret, _warning = realtime_fx_return_with_warning(con, secid, base_date)
+    return fx_ret
+
+
+def realtime_fx_return_with_warning(
+    con: sqlite3.Connection, secid: str, base_date: str | None = None
+) -> tuple[float, dict[str, Any] | None]:
     fx_secid = fx_secid_for_asset(secid)
     if not fx_secid:
-        return 0.0
+        return 0.0, None
     quote = con.execute("select * from quotes where secid = ?", (fx_secid,)).fetchone()
     if not quote:
-        return 0.0
-    fx_ret = realtime_quote_return(con, fx_secid, quote, base_date)
-    return fx_ret if fx_ret is not None else 0.0
+        return 0.0, {
+            "type": "fx_quote_missing",
+            "secid": fx_secid,
+            "asset_secid": secid,
+            "base_date": base_date,
+            "fallback_return": 0.0,
+            "message": "汇率实时行情缺失，按 0 处理",
+        }
+    fx_ret, warning = realtime_quote_return_with_warning(con, fx_secid, quote, base_date)
+    if fx_ret is not None:
+        return fx_ret, warning
+    if warning:
+        warning = {**warning, "fallback_return": 0.0, "message": f"{warning['message']}，汇率按 0 处理"}
+    else:
+        warning = {
+            "type": "fx_return_missing",
+            "secid": fx_secid,
+            "asset_secid": secid,
+            "base_date": base_date,
+            "fallback_return": 0.0,
+            "message": "汇率收益无法计算，按 0 处理",
+        }
+    return 0.0, warning
 
 
 def realtime_quote_return(
     con: sqlite3.Connection, secid: str, quote: sqlite3.Row, base_date: str | None = None
 ) -> float | None:
+    quote_ret, _warning = realtime_quote_return_with_warning(con, secid, quote, base_date)
+    return quote_ret
+
+
+def realtime_quote_return_with_warning(
+    con: sqlite3.Connection, secid: str, quote: sqlite3.Row, base_date: str | None = None
+) -> tuple[float | None, dict[str, Any] | None]:
     price = _positive_float(quote["price"])
     previous_close = _positive_float(quote["previous_close"])
+    fallback_return, fallback_source = _quote_pct_return_with_source(price, previous_close, quote["pct"])
     if not base_date:
-        return quote["pct"] / 100 if quote["pct"] is not None else None
+        return fallback_return, _quote_warning(
+            "no_base_date",
+            secid,
+            quote,
+            base_date,
+            price,
+            previous_close,
+            fallback_return,
+            fallback_source,
+            "缺少最新净值日期，使用行情涨跌幅",
+        )
 
     quote_date = _quote_date(quote)
     try:
@@ -126,7 +194,7 @@ def realtime_quote_return(
     except ValueError:
         base_day = None
     if quote_date and base_day and quote_date <= base_day:
-        return 0.0
+        return 0.0, None
     if (
         quote_date
         and base_day
@@ -134,13 +202,85 @@ def realtime_quote_return(
         and previous_close is not None
         and _previous_business_day(quote_date) == base_day
     ):
-        return price / previous_close - 1
+        return price / previous_close - 1, None
 
     if price is not None:
         base_price = _realtime_base_price(con, secid, base_date)
         if base_price:
-            return price / base_price - 1
-    return quote["pct"] / 100 if quote["pct"] is not None else None
+            return price / base_price - 1, None
+    if quote_date and base_day and quote_date > base_day:
+        return None, _quote_warning(
+            "base_price_missing",
+            secid,
+            quote,
+            base_date,
+            price,
+            previous_close,
+            None,
+            None,
+            "行情已晚于最新净值日，但缺少同口径基准价",
+        )
+    return fallback_return, _quote_warning(
+        "date_unavailable",
+        secid,
+        quote,
+        base_date,
+        price,
+        previous_close,
+        fallback_return,
+        fallback_source,
+        "无法判断行情日期或净值日期，使用行情涨跌幅",
+    )
+
+
+def _quote_pct_return(price: float | None, previous_close: float | None, pct: Any) -> float | None:
+    quote_ret, _source = _quote_pct_return_with_source(price, previous_close, pct)
+    return quote_ret
+
+
+def _quote_pct_return_with_source(
+    price: float | None, previous_close: float | None, pct: Any
+) -> tuple[float | None, str | None]:
+    if pct is not None:
+        return pct / 100, "quote_pct"
+    if price is not None and previous_close is not None:
+        return price / previous_close - 1, "price_previous_close"
+    return None, None
+
+
+def _holding_warning(holding: sqlite3.Row, kind: str, warning: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **warning,
+        "kind": kind,
+        "holding_secid": holding["secid"],
+        "holding_name": holding["name"],
+        "holding_weight": holding["weight"],
+    }
+
+
+def _quote_warning(
+    warning_type: str,
+    secid: str,
+    quote: sqlite3.Row,
+    base_date: str | None,
+    price: float | None,
+    previous_close: float | None,
+    fallback_return: float | None,
+    fallback_source: str | None,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "type": warning_type,
+        "secid": secid,
+        "base_date": base_date,
+        "quote_time": quote["quote_time"],
+        "price": price,
+        "previous_close": previous_close,
+        "pct": quote["pct"],
+        "fallback_return": fallback_return,
+        "fallback_source": fallback_source,
+        "message": message,
+    }
 
 
 def _positive_float(value: Any) -> float | None:
@@ -264,6 +404,7 @@ def calculate_backtest_row(
     estimated = prev["nav"] * (1 + weighted)
     actual_value = curr["nav"] + (curr["distribution"] or 0.0)
     error_pct = estimated / actual_value - 1 if actual_value else math.nan
+    data_quality = "low_coverage" if covered < MIN_BACKTEST_COVERED_WEIGHT else "ok"
     return {
         "fund_code": code,
         "date": curr["date"],
@@ -273,6 +414,7 @@ def calculate_backtest_row(
         "estimated_nav": estimated,
         "error_pct": error_pct,
         "covered_weight": covered,
+        "data_quality": data_quality,
     }
 
 
@@ -282,6 +424,7 @@ def backtest_price_diagnostics(
     previous_date: str,
     current_date: str,
     lag_days: int = 25,
+    price_lookup_cache: dict[tuple[str, str], tuple[str, float] | None] | None = None,
 ) -> dict[str, Any]:
     holdings = holdings_available_on(con, code, previous_date, lag_days)
     asset_stale_weight = 0.0
@@ -293,8 +436,8 @@ def backtest_price_diagnostics(
     fx_stale = []
     missing = []
     for holding in holdings:
-        previous = _backtest_price_item_on_or_before(con, holding["secid"], previous_date)
-        current = _backtest_price_item_on_or_before(con, holding["secid"], current_date)
+        previous = _backtest_price_item_cached(con, holding["secid"], previous_date, price_lookup_cache)
+        current = _backtest_price_item_cached(con, holding["secid"], current_date, price_lookup_cache)
         if not previous or not current:
             missing_weight += holding["weight"]
             missing.append(
@@ -325,7 +468,13 @@ def backtest_price_diagnostics(
             else:
                 asset_stale_weight += holding["weight"]
                 asset_stale.append(stale_item)
-        fx_diag = _historical_fx_diagnostic(con, holding["secid"], previous_date, current_date)
+        fx_diag = _historical_fx_diagnostic(
+            con,
+            holding["secid"],
+            previous_date,
+            current_date,
+            price_lookup_cache=price_lookup_cache,
+        )
         if fx_diag["missing"]:
             missing_weight += holding["weight"]
             missing.append(
@@ -384,8 +533,8 @@ def save_backtest_row(con: sqlite3.Connection, row: dict[str, Any]) -> None:
     con.execute(
         """
         insert or replace into backtests
-        (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav, error_pct, covered_weight)
-        values (:fund_code, :date, :previous_date, :previous_nav, :actual_nav, :estimated_nav, :error_pct, :covered_weight)
+        (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav, error_pct, covered_weight, data_quality)
+        values (:fund_code, :date, :previous_date, :previous_nav, :actual_nav, :estimated_nav, :error_pct, :covered_weight, :data_quality)
         """,
         row,
     )
@@ -441,17 +590,21 @@ def backtest_summary(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     ).fetchall()
     if not rows:
         return {"count": 0}
-    abs_errors = [abs(row["error_pct"]) for row in rows if row["error_pct"] is not None]
-    errors = [row["error_pct"] for row in rows if row["error_pct"] is not None]
+    usable_rows = [row for row in rows if row["data_quality"] == "ok"]
+    abs_errors = [abs(row["error_pct"]) for row in usable_rows if row["error_pct"] is not None]
+    errors = [row["error_pct"] for row in usable_rows if row["error_pct"] is not None]
     nav_returns = [
         row["actual_nav"] / row["previous_nav"] - 1
-        for row in rows
+        for row in usable_rows
         if row["actual_nav"] is not None and row["previous_nav"]
     ]
     mae_pct = sum(abs_errors) / len(abs_errors) if abs_errors else None
     nav_volatility_pct = pstdev(nav_returns) if len(nav_returns) >= 2 else None
+    latest_usable = usable_rows[0] if usable_rows else None
     return {
         "count": len(rows),
+        "quality_sample_count": len(usable_rows),
+        "low_coverage_count": sum(1 for row in rows if row["data_quality"] == "low_coverage"),
         "mae_pct": mae_pct,
         "nav_volatility_pct": nav_volatility_pct,
         "mae_to_nav_volatility": (
@@ -459,8 +612,8 @@ def backtest_summary(con: sqlite3.Connection, code: str) -> dict[str, Any]:
         ),
         "std_pct": pstdev(errors) if errors else None,
         "max_abs_error_pct": max(abs_errors) if abs_errors else None,
-        "latest_error_pct": rows[0]["error_pct"],
-        "latest_date": rows[0]["date"],
+        "latest_error_pct": latest_usable["error_pct"] if latest_usable else None,
+        "latest_date": latest_usable["date"] if latest_usable else None,
         "avg_covered_weight": sum(row["covered_weight"] for row in rows) / len(rows),
     }
 
@@ -559,6 +712,20 @@ def _backtest_price_item_on_or_before(
     return None
 
 
+def _backtest_price_item_cached(
+    con: sqlite3.Connection,
+    secid: str,
+    date: str,
+    price_lookup_cache: dict[tuple[str, str], tuple[str, float] | None] | None = None,
+) -> tuple[str, float] | None:
+    if price_lookup_cache is None:
+        return _backtest_price_item_on_or_before(con, secid, date)
+    key = (secid, date)
+    if key not in price_lookup_cache:
+        price_lookup_cache[key] = _backtest_price_item_on_or_before(con, secid, date)
+    return price_lookup_cache[key]
+
+
 def _has_yahoo_close_marks(con: sqlite3.Connection, secid: str) -> bool:
     row = con.execute(
         "select 1 from mark_prices where secid = ? and source = 'yahoo_daily_close' limit 1",
@@ -643,7 +810,7 @@ def _quote_date(quote: sqlite3.Row):
 
 def _allow_quote_mark(secid: str) -> bool:
     market, symbol = secid.split(".", 1)
-    if market in {"0", "1", "116", "120", "124"}:
+    if market in {"0", "1", "2", "116", "120", "124"}:
         return True
     return secid in {"100.HSI", "100.HSCEI"}
 
@@ -709,12 +876,13 @@ def _historical_fx_diagnostic(
     asset_secid: str,
     previous_date: str,
     current_date: str,
+    price_lookup_cache: dict[tuple[str, str], tuple[str, float] | None] | None = None,
 ) -> dict[str, Any]:
     fx_secid = fx_secid_for_asset(asset_secid)
     if not fx_secid:
         return {"fx_secid": None, "missing": False, "stale": False}
-    previous = _backtest_price_item_on_or_before(con, fx_secid, previous_date)
-    current = _backtest_price_item_on_or_before(con, fx_secid, current_date)
+    previous = _backtest_price_item_cached(con, fx_secid, previous_date, price_lookup_cache)
+    current = _backtest_price_item_cached(con, fx_secid, current_date, price_lookup_cache)
     if not previous or not current:
         return {"fx_secid": fx_secid, "missing": True, "stale": False}
     return {

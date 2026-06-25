@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from html import unescape
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
@@ -16,6 +16,9 @@ from requests import RequestException
 from bs4 import BeautifulSoup
 
 from .config import EASTMONEY_HEADERS, SINA_PRICE_SYMBOLS, YAHOO_PRICE_SYMBOLS
+
+
+RealtimeProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def utc_now() -> str:
@@ -52,17 +55,14 @@ def _get(url: str, **kwargs: Any) -> requests.Response:
     timeout = kwargs.pop("timeout", 20)
     attempts = kwargs.pop("attempts", 3)
     last_error: Exception | None = None
-    urls = [url]
-    if url.startswith("https://push2"):
-        urls.append("http://" + url.removeprefix("https://"))
-    for candidate in urls:
-        for attempt in range(attempts):
-            try:
-                response = requests.get(candidate, headers=headers, timeout=timeout, **kwargs)
-                response.raise_for_status()
-                return response
-            except requests.RequestException as exc:
-                last_error = exc
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
                 time.sleep(0.5 * (attempt + 1))
     if last_error:
         raise last_error
@@ -230,50 +230,105 @@ def _fetch_holdings_year(
     return periods
 
 
-def fetch_realtime_quotes(secids: list[str]) -> list[dict[str, Any]]:
+def emit_realtime_progress(
+    progress_callback: RealtimeProgressCallback | None,
+    phase: str,
+    completed: int,
+    message: str,
+) -> None:
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": phase,
+                "label": "行情",
+                "completed": max(0, min(98, completed)),
+                "total": 100,
+                "message": message,
+            }
+        )
+
+
+def fetch_realtime_quotes(
+    secids: list[str],
+    progress_callback: RealtimeProgressCallback | None = None,
+) -> list[dict[str, Any]]:
     if not secids:
         return []
     rows: list[dict[str, Any]] = []
     special = {"113.agm", *EASTMONEY_INDEX_SECIDS}
     special_secids = [secid for secid in secids if secid in special]
+    emit_realtime_progress(progress_callback, "quotes_start", 0, f"准备 {len(secids)} 个标的")
     with ThreadPoolExecutor(max_workers=min(8, len(special_secids) or 1)) as executor:
         futures = {executor.submit(special_realtime_quote, secid): secid for secid in special_secids}
+        completed = 0
         for future in as_completed(futures):
+            completed += 1
             try:
                 quote = future.result()
                 if quote:
                     rows.append(quote)
             except RequestException:
-                continue
+                pass
+            emit_realtime_progress(
+                progress_callback,
+                "quotes_special",
+                round(8 * completed / len(special_secids)),
+                f"特殊行情 {completed}/{len(special_secids)}",
+            )
     batches = [
         [secid for secid in secids[i : i + 30] if secid not in special]
         for i in range(0, len(secids), 30)
     ]
+    batches = [batch for batch in batches if batch]
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(eastmoney_realtime_batch, batch): batch for batch in batches if batch}
+        futures = {executor.submit(eastmoney_realtime_batch, batch): batch for batch in batches}
+        completed = 0
         for future in as_completed(futures):
+            completed += 1
             try:
                 rows.extend(future.result())
             except RequestException:
-                continue
+                pass
+            emit_realtime_progress(
+                progress_callback,
+                "quotes_eastmoney",
+                8 + round(62 * completed / len(batches)),
+                f"东方财富 {completed}/{len(batches)} 批",
+            )
     seen = {row["secid"] for row in rows}
     cn_fallback = [secid for secid in secids if secid not in seen and is_cn_exchange_secid(secid)]
-    for i in range(0, len(cn_fallback), 100):
+    cn_batches = [cn_fallback[i : i + 100] for i in range(0, len(cn_fallback), 100)]
+    for index, batch in enumerate(cn_batches, start=1):
         try:
-            rows.extend(sina_cn_realtime_quotes(cn_fallback[i : i + 100]))
+            rows.extend(sina_cn_realtime_quotes(batch))
         except (RequestException, ValueError, IndexError):
-            continue
+            pass
+        emit_realtime_progress(
+            progress_callback,
+            "quotes_sina_cn",
+            70 + round(12 * index / len(cn_batches)),
+            f"新浪A股 {index}/{len(cn_batches)} 批",
+        )
     seen = {row["secid"] for row in rows}
     fallback_secids = [secid for secid in secids if secid not in seen]
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=min(4, len(fallback_secids) or 1)) as executor:
         futures = {executor.submit(fallback_realtime_quote, secid): secid for secid in fallback_secids}
+        completed = 0
         for future in as_completed(futures):
+            completed += 1
             try:
                 quote = future.result()
             except Exception:
-                continue
+                quote = None
             if quote:
                 rows.append(quote)
+            emit_realtime_progress(
+                progress_callback,
+                "quotes_fallback",
+                82 + round(16 * completed / len(fallback_secids)),
+                f"备用源 {completed}/{len(fallback_secids)}",
+            )
+    emit_realtime_progress(progress_callback, "quotes_source_done", 98, f"源请求完成，返回 {len(rows)} 条")
     return rows
 
 
@@ -323,13 +378,16 @@ def eastmoney_realtime_batch(secids: list[str]) -> list[dict[str, Any]]:
         quote_time = None
         if item.get("f124"):
             quote_time = datetime.fromtimestamp(item["f124"], tz=timezone.utc).isoformat(timespec="seconds")
+        price = _to_float(item.get("f2"))
+        if price is None:
+            continue
         rows.append(
             {
                 "secid": f"{item['f13']}.{item['f12']}",
                 "symbol": item["f12"],
                 "market": int(item["f13"]),
                 "name": item.get("f14") or item["f12"],
-                "price": _to_float(item.get("f2")),
+                "price": price,
                 "pct": _to_float(item.get("f3")),
                 "previous_close": _to_float(item.get("f18")),
                 "quote_time": quote_time,
@@ -662,7 +720,7 @@ def yahoo_realtime_quote(secid: str, symbol: str) -> dict[str, Any] | None:
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
         params={"range": "5d", "interval": "1d"},
         timeout=8,
-        attempts=1,
+        attempts=2,
     ).json()
     result = response["chart"]["result"][0]
     timestamps = result.get("timestamp") or []

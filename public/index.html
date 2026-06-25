@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LOF iNAV</title>
-    <link rel="stylesheet" href="/styles.css?v=20260601-incremental-backtest" />
+    <link rel="stylesheet" href="/styles.css?v=20260625-refresh-progress" />
   </head>
   <body>
     <main class="shell">
@@ -15,6 +15,12 @@
         </div>
         <div class="status">
           <span id="refreshState">等待刷新</span>
+          <div id="refreshProgress" class="refresh-progress" hidden>
+            <div class="refresh-progress-track" aria-hidden="true">
+              <div id="refreshProgressBar" class="refresh-progress-bar"></div>
+            </div>
+            <span id="refreshProgressText" class="refresh-progress-text">--</span>
+          </div>
           <button id="exportCsvBtn" type="button">导出CSV</button>
           <button id="exportPngBtn" type="button">导出PNG</button>
           <button id="refreshBtn" type="button">刷新</button>
@@ -47,7 +53,7 @@
         <div class="filter-header">
           <div>
             <h2>类型筛选</h2>
-            <p id="typeFilterSummary">默认显示全部类型</p>
+            <p id="typeFilterSummary">默认显示 A 股以外类型</p>
           </div>
           <div class="filter-actions">
             <button id="selectAllTypesBtn" type="button">全选</button>
@@ -76,12 +82,12 @@
             <div class="premium-thresholds" aria-label="折溢价率阈值">
               <label class="threshold-field">
                 <span>溢价 &gt;</span>
-                <input id="premiumAboveInput" type="number" min="0" step="0.1" value="1" inputmode="decimal" />
+                <input id="premiumAboveInput" type="number" min="0" step="0.1" value="1.5" inputmode="decimal" />
                 <span>%</span>
               </label>
               <label class="threshold-field">
                 <span>折价 &lt; -</span>
-                <input id="discountBelowInput" type="number" min="0" step="0.1" value="1" inputmode="decimal" />
+                <input id="discountBelowInput" type="number" min="0" step="0.1" value="1.5" inputmode="decimal" />
                 <span>%</span>
               </label>
             </div>
@@ -122,6 +128,6 @@
         </p>
       </section>
     </main>
-    <script src="/app.js?v=20260601-incremental-backtest"></script>
+    <script src="/app.js?v=20260625-active-refresh"></script>
   </body>
 </html>
