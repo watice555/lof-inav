@@ -318,12 +318,18 @@ def run_backtest(con: sqlite3.Connection, code: str, days: int = 30, lag_days: i
     return results
 
 
-def run_backtest_incremental(con: sqlite3.Connection, code: str, lag_days: int = 25) -> list[dict[str, Any]]:
+def run_backtest_incremental(
+    con: sqlite3.Connection,
+    code: str,
+    lag_days: int = 25,
+    start_date: str | None = None,
+) -> list[dict[str, Any]]:
     latest_backtest = con.execute(
         "select max(date) as date from backtests where fund_code = ?", (code,)
     ).fetchone()
     start_after = latest_backtest["date"] if latest_backtest else None
-    if start_after:
+    anchor_date = incremental_backtest_anchor_date(con, code, start_after, start_date)
+    if anchor_date:
         navs = con.execute(
             """
             select * from navs
@@ -333,7 +339,7 @@ def run_backtest_incremental(con: sqlite3.Connection, code: str, lag_days: int =
               )
             order by date asc
             """,
-            (code, code, start_after),
+            (code, code, anchor_date),
         ).fetchall()
     else:
         navs = con.execute(
@@ -342,13 +348,22 @@ def run_backtest_incremental(con: sqlite3.Connection, code: str, lag_days: int =
     if len(navs) < 2:
         return []
 
-    needed_secids = backtest_secids_for_nav_pairs(con, code, navs, start_after, lag_days)
+    needed_secids = backtest_secids_for_nav_pairs(
+        con,
+        code,
+        navs,
+        start_after,
+        lag_days,
+        start_date=start_date,
+    )
     if not needed_secids:
         return []
     price_cache = {secid: _backtest_price_series(con, secid) for secid in needed_secids}
     results = []
     for prev, curr in zip(navs, navs[1:]):
         if start_after and curr["date"] <= start_after:
+            continue
+        if start_date and curr["date"] < start_date:
             continue
         row = calculate_backtest_row(con, code, prev, curr, price_cache, lag_days)
         if not row:
@@ -364,14 +379,34 @@ def backtest_secids_for_nav_pairs(
     navs: list[sqlite3.Row],
     start_after: str | None = None,
     lag_days: int = 25,
+    start_date: str | None = None,
 ) -> set[str]:
     secids: set[str] = set()
     for prev, curr in zip(navs, navs[1:]):
         if start_after and curr["date"] <= start_after:
             continue
+        if start_date and curr["date"] < start_date:
+            continue
         for holding in holdings_available_on(con, code, prev["date"], lag_days):
             secids.add(holding["secid"])
     return secids
+
+
+def incremental_backtest_anchor_date(
+    con: sqlite3.Connection,
+    code: str,
+    latest_backtest_date: str | None,
+    start_date: str | None,
+) -> str | None:
+    if latest_backtest_date and (not start_date or latest_backtest_date >= start_date):
+        return latest_backtest_date
+    if not start_date:
+        return latest_backtest_date
+    row = con.execute(
+        "select max(date) as date from navs where fund_code = ? and date < ?",
+        (code, start_date),
+    ).fetchone()
+    return row["date"] if row and row["date"] else start_date
 
 
 def calculate_backtest_row(

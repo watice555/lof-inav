@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .runtime import data_dir, db_path, fund_rules_path, resource_root
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = os.environ.get("LOF_INAV_DATA_DIR", str(ROOT / "data"))
-DB_PATH = os.environ.get("LOF_INAV_DB_PATH", str(Path(DATA_DIR) / "lof_inav.sqlite3"))
-FUND_RULES_PATH = Path(
-    os.environ.get("LOF_INAV_FUND_RULES_PATH", str(ROOT / "config" / "fund_rules.json"))
-)
+
+ROOT = resource_root()
+DATA_DIR = str(data_dir())
+DB_PATH = str(db_path())
+FUND_RULES_PATH = fund_rules_path()
 
 
 @dataclass(frozen=True)

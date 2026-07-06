@@ -26,6 +26,7 @@ from .sources import (
 from .valuation import (
     fx_secid_for_asset,
     holdings_available_on,
+    latest_holdings,
     run_backtest,
     run_backtest_incremental,
 )
@@ -33,6 +34,7 @@ from .valuation import (
 
 LOGGER = logging.getLogger(__name__)
 PRICE_REFRESH_PROGRESS_INTERVAL = 100
+INCREMENTAL_BACKTEST_LOOKBACK_DAYS = 7
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
@@ -93,6 +95,9 @@ def build_all(days: int = 30, update_backtests: bool = True) -> dict[str, list[d
             except Exception as exc:
                 LOGGER.exception("Backtest failed during full build: code=%s", code)
                 backtests_failed.append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
+    else:
+        with connect() as con:
+            refresh_current_valuation_base_prices(con)
 
     with connect() as con:
         set_meta(con, "last_build_at", utc_now())
@@ -206,6 +211,12 @@ def refresh_navs(
             [item["code"] for item in updated],
             progress_callback=progress_callback,
         )
+    elif updated:
+        refresh_current_valuation_base_prices(
+            con,
+            [item["code"] for item in updated],
+            progress_callback=progress_callback,
+        )
     return {
         "updated": updated,
         "failed": failed,
@@ -276,7 +287,14 @@ def refresh_incremental_backtests(
     price_target_completed = 0
     for code in stale_codes:
         try:
-            merge_price_targets(price_targets, incremental_backtest_price_targets_for_fund(con, code))
+            merge_price_targets(
+                price_targets,
+                incremental_backtest_price_targets_for_fund(
+                    con,
+                    code,
+                    start_date=incremental_backtest_cutoff_for_fund(con, code),
+                ),
+            )
         except Exception as exc:
             failed.append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
         price_target_completed += 1
@@ -324,7 +342,11 @@ def refresh_incremental_backtests(
     )
     for index, code in enumerate(stale_codes, start=1):
         try:
-            rows = run_backtest_incremental(con, code)
+            rows = run_backtest_incremental(
+                con,
+                code,
+                start_date=incremental_backtest_cutoff_for_fund(con, code),
+            )
             if rows:
                 refreshed.append({"code": code, "rows": len(rows), "latest_date": rows[-1]["date"]})
         except Exception as exc:
@@ -360,6 +382,63 @@ def refresh_incremental_backtests(
     return {"refreshed": refreshed, "failed": failed}
 
 
+def refresh_current_valuation_base_prices(
+    con,
+    codes: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
+    targets = current_valuation_base_price_targets(con, codes)
+    emit_progress(
+        progress_callback,
+        phase="current_base_prices",
+        label="基准价",
+        completed=0,
+        total=len(targets),
+        message=f"targets={count_price_targets(targets)}",
+    )
+    if not targets:
+        return
+    LOGGER.info(
+        "Refreshing current valuation base prices: secids=%s targets=%s",
+        len(targets),
+        count_price_targets(targets),
+    )
+    refresh_daily_prices_for_targets(con, targets, progress_callback=progress_callback)
+
+
+def current_valuation_base_price_targets(
+    con,
+    codes: list[str] | None = None,
+) -> dict[str, set[str]]:
+    targets: dict[str, set[str]] = {}
+    target_codes = codes or list(FUNDS)
+    end_date = datetime.now().date().isoformat()
+    for code in target_codes:
+        if code not in FUNDS:
+            continue
+        nav_date = latest_nav_date_for_fund(con, code)
+        if not nav_date:
+            continue
+        for holding in latest_holdings(con, code):
+            add_base_price_window(targets, holding["secid"], nav_date, end_date)
+            fx_secid = fx_secid_for_asset(holding["secid"])
+            if fx_secid:
+                add_base_price_window(targets, fx_secid, nav_date, end_date)
+    return targets
+
+
+def add_base_price_window(targets: dict[str, set[str]], secid: str, base_date: str, end_date: str) -> None:
+    try:
+        base_day = datetime.fromisoformat(base_date).date()
+        end_day = datetime.fromisoformat(end_date).date()
+    except ValueError:
+        add_price_target(targets, secid, base_date)
+        return
+    add_price_target(targets, secid, base_date)
+    if end_day > base_day:
+        add_price_target(targets, secid, end_date)
+
+
 def latest_nav_date_for_fund(con, code: str) -> str | None:
     row = con.execute("select max(date) as date from navs where fund_code = ?", (code,)).fetchone()
     return row["date"] if row else None
@@ -385,9 +464,29 @@ def latest_backtest_missing_trade_price_date(con, code: str) -> str | None:
     return backtest_date if latest_backtest_trade_price_missing(con, code, backtest_date) else None
 
 
-def incremental_backtest_price_targets_for_fund(con, code: str) -> dict[str, set[str]]:
+def incremental_backtest_cutoff_for_fund(
+    con,
+    code: str,
+    lookback_days: int = INCREMENTAL_BACKTEST_LOOKBACK_DAYS,
+) -> str | None:
+    latest_nav_date = latest_nav_date_for_fund(con, code)
+    if not latest_nav_date:
+        return None
+    try:
+        latest_day = datetime.fromisoformat(latest_nav_date).date()
+    except ValueError:
+        return None
+    return (latest_day - timedelta(days=lookback_days)).isoformat()
+
+
+def incremental_backtest_price_targets_for_fund(
+    con,
+    code: str,
+    start_date: str | None = None,
+) -> dict[str, set[str]]:
     latest_backtest_date = latest_backtest_date_for_fund(con, code)
-    if latest_backtest_date:
+    anchor_date = incremental_backtest_anchor_date(con, code, latest_backtest_date, start_date)
+    if anchor_date:
         navs = con.execute(
             """
             select * from navs
@@ -397,7 +496,7 @@ def incremental_backtest_price_targets_for_fund(con, code: str) -> dict[str, set
               )
             order by date asc
             """,
-            (code, code, latest_backtest_date),
+            (code, code, anchor_date),
         ).fetchall()
     else:
         navs = con.execute(
@@ -407,6 +506,8 @@ def incremental_backtest_price_targets_for_fund(con, code: str) -> dict[str, set
     targets: dict[str, set[str]] = {}
     for prev, curr in zip(navs, navs[1:]):
         if latest_backtest_date and curr["date"] <= latest_backtest_date:
+            continue
+        if start_date and curr["date"] < start_date:
             continue
         for secid in backtest_secids_for_nav_pair(con, code, prev["date"]):
             add_price_target(targets, secid, prev["date"])
@@ -437,6 +538,23 @@ def merge_price_targets(left: dict[str, set[str]], right: dict[str, set[str]]) -
 
 def count_price_targets(targets: dict[str, set[str]]) -> int:
     return sum(len(dates) for dates in targets.values())
+
+
+def incremental_backtest_anchor_date(
+    con,
+    code: str,
+    latest_backtest_date: str | None,
+    start_date: str | None,
+) -> str | None:
+    if latest_backtest_date and (not start_date or latest_backtest_date >= start_date):
+        return latest_backtest_date
+    if not start_date:
+        return latest_backtest_date
+    row = con.execute(
+        "select max(date) as date from navs where fund_code = ? and date < ?",
+        (code, start_date),
+    ).fetchone()
+    return row["date"] if row and row["date"] else start_date
 
 
 def import_fund_data(con, code: str, years: list[int] | None = None) -> set[str]:

@@ -75,7 +75,7 @@ http://127.0.0.1:8000
 python build.py --current-only
 ```
 
-`--current-only` 会导入 `config/fund_rules.json` 中的全部基金，刷新净值、公告、持仓/代理、实时行情、汇率和申购限额。它不会刷新历史日线价格，也不会生成或展示回测数据，适合第一次快速把网页跑起来。
+`--current-only` 会导入 `config/fund_rules.json` 中的全部基金，刷新净值、公告、持仓/代理、实时行情、汇率和申购限额，并补齐当前估值所需的净值日基准价。它不会刷新完整历史日线价格，也不会生成或展示回测数据，适合第一次快速把网页跑起来。
 
 需要回测指标时再运行完整构建：
 
@@ -95,6 +95,43 @@ python serve.py
 ```
 
 依赖和数据都准备好后，也可以运行 [`start.bat`](start.bat)，它会优先使用 `.venv` 里的 Python，只启动 `serve.py` 并打开浏览器，不会安装依赖或执行构建。
+
+## 发布 Windows exe
+
+可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会监听 `http://127.0.0.1:8000`，并自动打开浏览器。
+
+在开发机上运行：
+
+```powershell
+.\scripts\build_exe.ps1
+```
+
+脚本会安装运行依赖和打包依赖，然后生成：
+
+```text
+dist\LOF_iNAV.exe
+```
+
+把 `LOF_iNAV.exe` 放到一个可写目录后双击运行即可。首次运行时，如果 exe 旁边还没有 `data\lof_inav.sqlite3`，程序会自动执行一次快速构建，等价于：
+
+```powershell
+python build.py --current-only
+```
+
+数据库和日志会写到 exe 同目录的 `data\` 下。默认基金规则会打进 exe；如果需要覆盖规则，可以在 exe 同目录放置：
+
+```text
+config\fund_rules.json
+```
+
+如果本机 `8000` 端口已被占用，可以先设置 `LOF_INAV_PORT` 再启动：
+
+```powershell
+$env:LOF_INAV_PORT = "8010"
+.\dist\LOF_iNAV.exe
+```
+
+这种 exe 适合降低普通用户门槛：用户不需要安装 Python，也不需要打开命令行。它仍然是本地网站形态，网络数据源不可用时页面数据也会受影响。
 
 ## 日常命令
 
@@ -241,6 +278,8 @@ error_pct = estimated_nav / actual_nav - 1
 - `最大误差`、`最新误差`、`平均覆盖仓位`：用于判断代理规则是否稳定。
 
 单只基金详情页展示最近 30 条回测明细，包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
+
+网页里的增量回测只补每只基金最新净值日前 7 个自然日内的缺口，避免首次启用回测时追补多年历史。需要重建最近 30 条或更多历史回测时，使用 `python build.py` 或 `python build.py --days <条数>`。
 
 ## 规则配置
 

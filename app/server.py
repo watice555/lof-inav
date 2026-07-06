@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import secrets
 import threading
 import time
@@ -17,13 +18,14 @@ from requests import RequestException
 from .build import refresh_navs, refresh_purchase_limits, refresh_quotes
 from .config import FUNDS, FX_MIDPOINT_SECIDS
 from .db import connect, get_meta, init_db, set_meta
+from .runtime import data_dir, resource_root
 from .sources import utc_now
 from .valuation import backtest_price_diagnostics, estimate_intraday, latest_holdings
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = resource_root()
 PUBLIC = ROOT / "public"
-LOG_PATH = ROOT / "data" / "lof_inav.log"
+LOG_PATH = data_dir() / "lof_inav.log"
 QUOTE_REFRESH_INTERVAL_SECONDS = 60
 PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS = 60 * 60
 NAV_REFRESH_INTERVAL_SECONDS = 15 * 60
@@ -32,8 +34,11 @@ REFRESH_PROGRESS_DONE_TTL_SECONDS = 20.0
 REFRESH_PROGRESS_STALE_SECONDS = 60 * 60
 LOGGER = logging.getLogger(__name__)
 CSRF_TOKEN = secrets.token_urlsafe(32)
-ALLOWED_LOCAL_HOSTS = {"127.0.0.1:8000", "localhost:8000"}
-ALLOWED_LOCAL_ORIGINS = {"http://127.0.0.1:8000", "http://localhost:8000"}
+HOST = os.environ.get("LOF_INAV_HOST", "127.0.0.1")
+PORT = int(os.environ.get("LOF_INAV_PORT", "8000"))
+URL = f"http://{HOST}:{PORT}"
+ALLOWED_LOCAL_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"{HOST}:{PORT}"}
+ALLOWED_LOCAL_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}", URL}
 
 _quote_refresh_lock = threading.Lock()
 _quote_refresh_started_at = 0.0
@@ -325,13 +330,13 @@ def main() -> None:
     configure_logging()
     init_db()
     try:
-        server = SingleInstanceHTTPServer(("127.0.0.1", 8000), Handler)
+        server = SingleInstanceHTTPServer((HOST, PORT), Handler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
-            raise SystemExit("LOF iNAV server is already running at http://127.0.0.1:8000") from exc
+            raise SystemExit(f"LOF iNAV server is already running at {URL}") from exc
         raise
-    LOGGER.info("LOF iNAV server started at http://127.0.0.1:8000")
-    print("LOF iNAV server: http://127.0.0.1:8000")
+    LOGGER.info("LOF iNAV server started at %s", URL)
+    print(f"LOF iNAV server: {URL}")
     server.serve_forever()
 
 
