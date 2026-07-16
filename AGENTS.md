@@ -28,6 +28,8 @@ Keep commits focused and use short imperative messages. Pull requests should des
 
 After completing a meaningful, independently verifiable phase, update the root `IMPLEMENTATION_LOG.md` (create it if absent) with the phase summary, verification performed, and exact local timestamp, for example `2026-07-11 16:30 Asia/Shanghai`. Then create a focused git commit without waiting for a separate prompt. Run `git status --short` first and stage only phase-related files. Preserve unrelated user edits and never include local databases, fetched data, `build/`, `dist/`, caches, or generated executable output. If verification is skipped or blocked, record the reason in the log before committing.
 
+Every phase entry must also include a `Device` field containing the automatically detected hostname, operating system, and CPU architecture, for example `Device: WUTH-X (Windows 11, AMD64)` or `Device: MacBook-Pro (macOS, arm64)`. Detect these values from the local environment rather than guessing. Do not record usernames, serial numbers, MAC addresses, IP addresses, or other sensitive device identifiers.
+
 ## Financial Data & Network Safety
 
 This project presents indicative estimates, not guaranteed NAV values. Preserve the user-facing disclaimer and do not describe estimates as official prices. Network-backed commands can be slow and can trigger rate limits; prefer cached data, bounded requests, and explicit timeouts. Never place private proxy credentials or service tokens in rules, docs, logs, or commits.
