@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import ipaddress
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -16,21 +17,35 @@ from urllib.parse import urlparse
 
 from requests import RequestException
 
-from .build import refresh_navs, refresh_purchase_limits, refresh_quotes
+from .build import refresh_navs, refresh_purchase_limits, refresh_quotes, refresh_reports
 from .config import FUNDS, FX_MIDPOINT_SECIDS
-from .db import connect, get_meta, init_db, set_meta
+from .db import connect, database_readiness, get_meta, init_db, set_meta
+from .market_calendar import is_trading_session
 from .runtime import data_dir, resource_root
-from .sources import utc_now
-from .valuation import backtest_price_diagnostics, estimate_intraday, latest_holdings
+from .sources import app_today, utc_now
+from .valuation import (
+    IntradayPrefetch,
+    backtest_price_diagnostics,
+    estimate_intraday,
+    latest_holdings,
+    prefetch_intraday_inputs,
+)
 
 
 ROOT = resource_root()
 PUBLIC = ROOT / "public"
 LOG_PATH = data_dir() / "lof_inav.log"
+PID_PATH = data_dir() / "lof_inav.pid"
 QUOTE_REFRESH_INTERVAL_SECONDS = 60
+FAILED_QUOTE_RETRY_INTERVAL_SECONDS = 5 * 60
+MISSING_QUOTE_RETRY_INTERVAL_SECONDS = 60 * 60
 PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS = 60 * 60
+REPORT_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
+REPORT_RETRY_INTERVAL_SECONDS = 60 * 60
 NAV_REFRESH_INTERVAL_SECONDS = 15 * 60
-FUNDS_PAYLOAD_CACHE_SECONDS = 2.0
+NAV_UNCHANGED_REFRESH_INTERVAL_SECONDS = 60 * 60
+NAV_NON_TRADING_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
+FUNDS_PAYLOAD_CACHE_SECONDS = 20.0
 REFRESH_PROGRESS_DONE_TTL_SECONDS = 20.0
 REFRESH_PROGRESS_STALE_SECONDS = 60 * 60
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +54,6 @@ HOST = os.environ.get("LOF_INAV_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LOF_INAV_PORT", "8001"))
 PORT_IS_EXPLICIT = "LOF_INAV_PORT" in os.environ
 PORT_FALLBACK_ATTEMPTS = 100
-PID_PATH = data_dir() / "lof_inav.pid"
 URL = f"http://{HOST}:{PORT}"
 ALLOWED_LOCAL_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"{HOST}:{PORT}"}
 ALLOWED_LOCAL_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}", URL}
@@ -48,10 +62,11 @@ _quote_refresh_lock = threading.Lock()
 _quote_refresh_started_at = 0.0
 _purchase_limit_refresh_lock = threading.Lock()
 _purchase_limit_refresh_started_at = 0.0
+_report_refresh_lock = threading.Lock()
+_report_refresh_started_at = 0.0
 _nav_refresh_lock = threading.Lock()
 _nav_refresh_started_at = 0.0
 _backtest_refresh_lock = threading.Lock()
-_refresh_write_lock = threading.Lock()
 _funds_payload_cache_lock = threading.Lock()
 _funds_payload_cache: dict | None = None
 _refresh_progress_lock = threading.Lock()
@@ -69,6 +84,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/refresh-status":
+            self.handle_refresh_status()
+            return
         if parsed.path == "/api/funds":
             self.handle_funds()
             return
@@ -81,6 +99,35 @@ class Handler(SimpleHTTPRequestHandler):
             self.handle_backtest(code)
             return
         super().do_GET()
+
+    def handle_refresh_status(self) -> None:
+        with connect() as con:
+            payload = {
+                "last_realtime_quotes_refresh_at": get_meta(
+                    con, "last_realtime_quotes_refresh_success_at"
+                ),
+                "last_realtime_quotes_completed_at": get_meta(
+                    con, "last_realtime_quotes_completed_at"
+                ),
+                "last_purchase_limits_refresh_at": get_meta(
+                    con, "last_purchase_limits_refresh_success_at"
+                ),
+                "last_purchase_limits_completed_at": get_meta(
+                    con, "last_purchase_limits_refresh_completed_at"
+                ),
+                "last_navs_refresh_at": get_meta(con, "last_navs_refresh_at"),
+                "last_navs_refresh_success_at": get_meta(con, "last_navs_refresh_success_at"),
+                "last_reports_refresh_success_at": get_meta(
+                    con, "last_reports_refresh_success_at"
+                ),
+                "last_reports_refresh_completed_at": get_meta(
+                    con, "last_reports_refresh_completed_at"
+                ),
+                "last_incremental_backtests_refresh_at": get_meta(
+                    con, "last_incremental_backtests_refresh_at"
+                ),
+            }
+        self.json(attach_refresh_runtime_state(payload))
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -105,49 +152,52 @@ class Handler(SimpleHTTPRequestHandler):
         quote_refresh_secids: list[str] = []
         should_refresh_purchase_limits = False
         should_refresh_navs = False
+        should_refresh_reports = False
         with connect() as con:
-            secids = collect_realtime_secids(con)
+            intraday_prefetch = prefetch_intraday_inputs(con, list(FUNDS))
+            secids = collect_realtime_secids(con, intraday_prefetch)
             last_navs_refresh_at = get_meta(con, "last_navs_refresh_at")
             last_navs_refresh_success_at = get_meta(con, "last_navs_refresh_success_at")
+            last_navs_refresh_errors = get_meta(con, "last_navs_refresh_errors", [])
             last_incremental_backtests_refresh_at = get_meta(con, "last_incremental_backtests_refresh_at")
             last_quotes_refresh_at = get_meta(con, "last_realtime_quotes_refresh_at")
+            last_quotes_refresh_success_at = get_meta(
+                con, "last_realtime_quotes_refresh_success_at"
+            )
             last_purchase_limits_refresh_at = get_meta(con, "last_purchase_limits_refresh_at")
+            last_purchase_limits_success_at = get_meta(
+                con, "last_purchase_limits_refresh_success_at"
+            )
+            purchase_limit_missing_codes = set(
+                get_meta(con, "last_purchase_limits_refresh_missing_codes", []) or []
+            )
+            last_reports_refresh_success_at = get_meta(
+                con, "last_reports_refresh_success_at"
+            )
+            last_reports_refresh_completed_at = get_meta(
+                con, "last_reports_refresh_completed_at"
+            )
+            last_reports_refresh_errors = get_meta(
+                con, "last_reports_refresh_errors", []
+            )
+            pending_report_backtests = get_meta(
+                con, "pending_report_backtests", {}
+            ) or {}
             backtests_disabled = bool(get_meta(con, "backtests_disabled", False))
-            if nav_cache_is_empty(con) or not last_navs_refresh_at:
-                with _refresh_write_lock:
-                    result = refresh_navs(con, update_backtests=False)
-                LOGGER.info("Initial nav refresh completed: updated=%s failed=%s", len(result["updated"]), len(result["failed"]))
-                last_navs_refresh_at = get_meta(con, "last_navs_refresh_at")
-                last_navs_refresh_success_at = get_meta(con, "last_navs_refresh_success_at")
-                last_incremental_backtests_refresh_at = get_meta(con, "last_incremental_backtests_refresh_at")
-            elif refresh_is_due(last_navs_refresh_at, NAV_REFRESH_INTERVAL_SECONDS):
+            nav_cache_empty = nav_cache_is_empty(con)
+            if nav_cache_empty or not last_navs_refresh_at:
                 should_refresh_navs = True
-            missing_quote_secids = quote_cache_missing_secids(con, secids)
-            if len(missing_quote_secids) == len(set(secids)) and missing_quote_secids:
-                with _refresh_write_lock:
-                    result = refresh_quotes(con, secids)
-                LOGGER.info(
-                    "Initial quote refresh completed: requested=%s saved=%s missing=%s",
-                    result["requested"],
-                    result["saved"],
-                    len(result["missing"]),
-                )
-                last_quotes_refresh_at = get_meta(con, "last_realtime_quotes_refresh_at")
-            elif missing_quote_secids and quote_refresh_is_due(last_quotes_refresh_at):
-                should_refresh_quotes = True
-                quote_refresh_secids = missing_quote_secids
-            elif quote_refresh_is_due(last_quotes_refresh_at):
-                should_refresh_quotes = True
-                quote_refresh_secids = secids
+            elif refresh_is_due(last_navs_refresh_at, nav_refresh_interval_seconds(con)):
+                should_refresh_navs = True
+            if not nav_cache_empty and refresh_is_due(
+                last_reports_refresh_completed_at,
+                report_refresh_interval_seconds(con),
+            ):
+                should_refresh_reports = True
+            quote_refresh_secids = quote_refresh_due_secids(con, secids)
+            should_refresh_quotes = bool(quote_refresh_secids)
             if purchase_limit_cache_is_empty(con):
-                try:
-                    with _refresh_write_lock:
-                        refresh_purchase_limits(con)
-                    last_purchase_limits_refresh_at = get_meta(con, "last_purchase_limits_refresh_at")
-                    LOGGER.info("Initial purchase limit refresh completed")
-                except (RequestException, ValueError):
-                    LOGGER.exception("Initial purchase limit refresh failed")
-                    last_purchase_limits_refresh_at = get_meta(con, "last_purchase_limits_refresh_at")
+                should_refresh_purchase_limits = True
             elif refresh_is_due(last_purchase_limits_refresh_at, PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS):
                 should_refresh_purchase_limits = True
             if backtests_disabled:
@@ -156,17 +206,26 @@ class Handler(SimpleHTTPRequestHandler):
                 latest_nav_dates = {}
             else:
                 backtest_summaries, latest_backtests = collect_backtest_cache(con)
-                latest_nav_dates = collect_latest_nav_dates(con)
+                latest_nav_dates = {
+                    code: row["date"]
+                    for code, row in intraday_prefetch.latest_navs.items()
+                    if row["date"]
+                }
             funds = []
             for code, cfg in FUNDS.items():
                 try:
-                    item = estimate_intraday(con, code)
+                    item = estimate_intraday(con, code, prefetch=intraday_prefetch)
                     item["status"] = "ok"
                     item["backtest"] = (
                         {"count": 0, "disabled": True}
                         if backtests_disabled
                         else backtest_summaries.get(code, {"count": 0})
                     )
+                    if code in purchase_limit_missing_codes:
+                        item["purchase_limit"] = {
+                            **(item.get("purchase_limit") or {}),
+                            "stale": True,
+                        }
                 except Exception as exc:
                     LOGGER.exception("Fund valuation failed: code=%s", code)
                     item = {
@@ -181,7 +240,12 @@ class Handler(SimpleHTTPRequestHandler):
                         "estimated_nav": None,
                         "premium": None,
                         "covered_weight": 0,
-                        "missing_weight": 1,
+                        "modeled_weight": 0,
+                        "priced_weight": 0,
+                        "priced_ratio": None,
+                        "unmodeled_weight": 1,
+                        "unpriced_weight": 0,
+                        "missing_weight": 0,
                         "missing_quotes": [],
                         "realtime_warnings": [],
                         "note": cfg.note,
@@ -207,18 +271,26 @@ class Handler(SimpleHTTPRequestHandler):
                 funds,
                 include_backtests=not backtests_disabled,
                 latest_backtests=latest_backtests,
+                nav_refresh_errors=last_navs_refresh_errors,
+                report_refresh_errors=last_reports_refresh_errors,
+                pending_report_backtests=pending_report_backtests,
             )
             payload = {
-                "last_realtime_quotes_refresh_at": last_quotes_refresh_at,
-                "last_purchase_limits_refresh_at": last_purchase_limits_refresh_at,
+                "last_realtime_quotes_refresh_at": last_quotes_refresh_success_at,
+                "last_realtime_quotes_completed_at": last_quotes_refresh_at,
+                "last_purchase_limits_refresh_at": last_purchase_limits_success_at,
+                "last_purchase_limits_completed_at": last_purchase_limits_refresh_at,
                 "last_navs_refresh_at": last_navs_refresh_at,
                 "last_navs_refresh_success_at": last_navs_refresh_success_at,
+                "last_reports_refresh_success_at": last_reports_refresh_success_at,
+                "last_reports_refresh_completed_at": last_reports_refresh_completed_at,
                 "last_incremental_backtests_refresh_at": last_incremental_backtests_refresh_at,
                 "backtest_status": backtest_status,
                 "backtests_disabled": backtests_disabled,
                 "quotes_refreshing": should_refresh_quotes,
                 "purchase_limits_refreshing": should_refresh_purchase_limits,
                 "navs_refreshing": should_refresh_navs,
+                "reports_refreshing": should_refresh_reports,
                 "backtests_refreshing": _backtest_refresh_lock.locked(),
                 "data_alerts": data_alerts,
                 "data_alert_count": len(data_alerts),
@@ -227,6 +299,8 @@ class Handler(SimpleHTTPRequestHandler):
             }
         if should_refresh_navs:
             payload["navs_refreshing"] = schedule_nav_refresh(update_backtests=False)
+        if should_refresh_reports:
+            payload["reports_refreshing"] = schedule_report_refresh()
         if should_refresh_quotes:
             payload["quotes_refreshing"] = schedule_quote_refresh(quote_refresh_secids or secids)
         if should_refresh_purchase_limits:
@@ -242,6 +316,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "started": started,
                 "message": message,
                 "navs_refreshing": _nav_refresh_lock.locked(),
+                "reports_refreshing": _report_refresh_lock.locked(),
                 "backtests_refreshing": _backtest_refresh_lock.locked(),
                 "last_incremental_backtests_refresh_at": get_meta(
                     con, "last_incremental_backtests_refresh_at"
@@ -256,11 +331,13 @@ class Handler(SimpleHTTPRequestHandler):
                 dict(row)
                 for row in con.execute(
                     """
-                    select h.*, q.price as quote_price, q.quote_time as quote_time,
+                    select h.*,
+                           case when q.fetch_status = 'ok' then q.price else null end as quote_price,
+                           q.quote_time as quote_time,
                            q.updated_at as quote_updated_at
                     from holdings h
                     left join quotes q on q.secid = h.secid
-                    where h.fund_code = ?
+                    where h.fund_code = ? and h.weight > 0
                       and h.report_date = (
                         select max(report_date) from holdings where fund_code = ?
                       )
@@ -293,6 +370,7 @@ class Handler(SimpleHTTPRequestHandler):
                     left join daily_prices p
                       on p.secid = cast(f.exchange_market as text) || '.' || b.fund_code
                      and p.date = b.date
+                     and p.close > 0
                     where b.fund_code = ?
                     order by b.date desc
                     limit 30
@@ -300,9 +378,16 @@ class Handler(SimpleHTTPRequestHandler):
                     (code,),
                 )
             ]
+            price_lookup_cache: dict[
+                tuple[str, str], tuple[str, float] | None
+            ] = {}
             for row in rows:
                 row["price_diagnostics"] = backtest_price_diagnostics(
-                    con, code, row["previous_date"], row["date"]
+                    con,
+                    code,
+                    row["previous_date"],
+                    row["date"],
+                    price_lookup_cache=price_lookup_cache,
                 )
         self.json({"code": code, "rows": rows})
 
@@ -334,7 +419,9 @@ def main() -> None:
     global PORT, URL, ALLOWED_LOCAL_HOSTS, ALLOWED_LOCAL_ORIGINS
 
     configure_logging()
+    require_loopback_host(HOST)
     init_db()
+    require_database_ready()
     requested_port = PORT
     server = create_http_server()
     actual_port = int(server.server_address[1])
@@ -394,6 +481,21 @@ def should_open_browser() -> bool:
     )
 
 
+def require_loopback_host(host: str) -> None:
+    normalized = host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return
+    try:
+        is_loopback = ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        is_loopback = False
+    if not is_loopback:
+        raise SystemExit(
+            "LOF iNAV only supports loopback binding. "
+            "Set LOF_INAV_HOST to 127.0.0.1 or localhost."
+        )
+
+
 def write_server_pid() -> str:
     token = secrets.token_hex(16)
     payload = {
@@ -423,6 +525,18 @@ def remove_server_pid(token: str) -> None:
         PID_PATH.unlink()
     except FileNotFoundError:
         pass
+
+
+def require_database_ready() -> dict:
+    with connect() as con:
+        status = database_readiness(con)
+    if status["ready"]:
+        return status
+    raise SystemExit(
+        "LOF iNAV database is incomplete or incompatible. "
+        "Run `python build.py --current-only` before starting the server. "
+        f"Status: {json.dumps(status, ensure_ascii=False)}"
+    )
 
 
 def configure_logging() -> None:
@@ -470,6 +584,7 @@ def attach_refresh_runtime_state(payload: dict) -> dict:
     payload["quotes_refreshing"] = _quote_refresh_lock.locked()
     payload["purchase_limits_refreshing"] = _purchase_limit_refresh_lock.locked()
     payload["navs_refreshing"] = _nav_refresh_lock.locked()
+    payload["reports_refreshing"] = _report_refresh_lock.locked()
     payload["backtests_refreshing"] = _backtest_refresh_lock.locked()
     payload["refresh_progress"] = get_active_refresh_progress()
     return payload
@@ -554,7 +669,7 @@ def get_refresh_progresses() -> dict[str, dict]:
         for kind, progress in _refresh_progress_by_kind.items():
             updated = progress.get("_updated_monotonic", now)
             status = progress.get("status")
-            if status in {"done", "error"} and now - updated > REFRESH_PROGRESS_DONE_TTL_SECONDS:
+            if status in {"done", "partial", "error"} and now - updated > REFRESH_PROGRESS_DONE_TTL_SECONDS:
                 expired.append(kind)
                 continue
             if status == "running" and now - updated > REFRESH_PROGRESS_STALE_SECONDS:
@@ -581,20 +696,35 @@ def get_active_refresh_progress() -> dict | None:
         return progresses["backtests"]
     if _nav_refresh_lock.locked() and "navs" in progresses:
         return progresses["navs"]
+    if _report_refresh_lock.locked() and "reports" in progresses:
+        return progresses["reports"]
     if _quote_refresh_lock.locked() and "quotes" in progresses:
         return progresses["quotes"]
-    if _nav_refresh_lock.locked() or _purchase_limit_refresh_lock.locked():
+    if _purchase_limit_refresh_lock.locked() and "purchase_limits" in progresses:
+        return progresses["purchase_limits"]
+    if (
+        _nav_refresh_lock.locked()
+        or _report_refresh_lock.locked()
+        or _purchase_limit_refresh_lock.locked()
+    ):
         return None
     if not progresses:
         return None
     return max(progresses.values(), key=lambda item: item.get("updated_at") or "")
 
 
-def collect_realtime_secids(con) -> list[str]:
+def collect_realtime_secids(
+    con, prefetch: IntradayPrefetch | None = None
+) -> list[str]:
     secids = [f"{cfg.exchange_market}.{code}" for code, cfg in FUNDS.items()]
     secids.extend(FX_MIDPOINT_SECIDS.values())
     for code in FUNDS:
-        for row in latest_holdings(con, code):
+        rows = (
+            prefetch.holdings.get(code, [])
+            if prefetch is not None
+            else latest_holdings(con, code)
+        )
+        for row in rows:
             secids.append(row["secid"])
     return sorted(set(secids))
 
@@ -609,11 +739,48 @@ def quote_cache_missing_secids(con, secids: list[str]) -> list[str]:
         select secid from quotes
         where secid in ({placeholders})
           and price is not null
+          and price > 0
+          and fetch_status = 'ok'
         """,
         unique_secids,
     ).fetchall()
     present = {row["secid"] for row in rows}
     return [secid for secid in unique_secids if secid not in present]
+
+
+def quote_refresh_due_secids(
+    con,
+    secids: list[str],
+    now_at: str | None = None,
+) -> list[str]:
+    unique_secids = sorted(set(secids))
+    if not unique_secids:
+        return []
+    placeholders = ",".join("?" for _ in unique_secids)
+    rows = con.execute(
+        f"""
+        select secid, fetch_status, last_attempt_at, last_success_at
+        from quotes
+        where secid in ({placeholders})
+        """,
+        unique_secids,
+    ).fetchall()
+    cached = {row["secid"]: row for row in rows}
+    due = []
+    for secid in unique_secids:
+        row = cached.get(secid)
+        if row is None:
+            due.append(secid)
+            continue
+        if row["fetch_status"] == "ok":
+            interval = QUOTE_REFRESH_INTERVAL_SECONDS
+        elif row["last_success_at"]:
+            interval = FAILED_QUOTE_RETRY_INTERVAL_SECONDS
+        else:
+            interval = MISSING_QUOTE_RETRY_INTERVAL_SECONDS
+        if refresh_is_due(row["last_attempt_at"], interval, now_at=now_at):
+            due.append(secid)
+    return due
 
 
 def purchase_limit_cache_is_empty(con) -> bool:
@@ -639,6 +806,11 @@ def compact_fund_payload(fund: dict) -> dict:
             "estimated_nav",
             "premium",
             "covered_weight",
+            "modeled_weight",
+            "priced_weight",
+            "priced_ratio",
+            "unmodeled_weight",
+            "unpriced_weight",
             "note",
             "quote_time",
             "status",
@@ -652,7 +824,7 @@ def compact_fund_payload(fund: dict) -> dict:
     )
     item["purchase_limit"] = compact_nested_payload(
         fund.get("purchase_limit"),
-        ("display", "sort_value"),
+        ("display", "sort_value", "stale"),
     )
     item["backtest"] = compact_nested_payload(
         fund.get("backtest"),
@@ -727,6 +899,7 @@ def summarize_backtest_rows(rows: list) -> dict:
         "count": len(rows),
         "quality_sample_count": len(usable_rows),
         "low_coverage_count": sum(1 for row in rows if row["data_quality"] == "low_coverage"),
+        "outlier_count": sum(1 for row in rows if row["data_quality"] == "outlier"),
         "mae_pct": mae_pct,
         "nav_volatility_pct": nav_volatility_pct,
         "mae_to_nav_volatility": (
@@ -737,6 +910,8 @@ def summarize_backtest_rows(rows: list) -> dict:
         "latest_error_pct": latest_usable["error_pct"] if latest_usable else None,
         "latest_date": latest_usable["date"] if latest_usable else None,
         "avg_covered_weight": sum(row["covered_weight"] for row in rows) / len(rows),
+        "avg_modeled_weight": sum(row["modeled_weight"] for row in rows) / len(rows),
+        "avg_priced_ratio": sum(row["priced_ratio"] for row in rows) / len(rows),
     }
 
 
@@ -776,12 +951,66 @@ def collect_data_alerts(
     funds: list[dict],
     include_backtests: bool = True,
     latest_backtests: dict[str, object] | None = None,
+    nav_refresh_errors: list[dict] | None = None,
+    report_refresh_errors: list[dict] | None = None,
+    pending_report_backtests: dict[str, str] | None = None,
 ) -> list[dict]:
     if include_backtests and latest_backtests is None:
         latest_backtests = collect_backtest_cache(con)[1]
     alerts = []
+    nav_errors_by_code = {
+        item.get("code"): item.get("error") or "unknown error"
+        for item in (nav_refresh_errors or [])
+        if item.get("code")
+    }
+    report_errors_by_code: dict[str, list[str]] = {}
+    for item in report_refresh_errors or []:
+        code = item.get("code")
+        if code:
+            report_errors_by_code.setdefault(code, []).append(
+                item.get("error") or "unknown error"
+            )
+    pending_report_backtests = pending_report_backtests or {}
     price_lookup_cache: dict[tuple[str, str], tuple[str, float] | None] = {}
     for fund in funds:
+        if (
+            fund["code"] in report_errors_by_code
+            or fund["code"] in pending_report_backtests
+        ):
+            details = report_errors_by_code.get(fund["code"], [])
+            if fund["code"] in pending_report_backtests:
+                details = [
+                    *details,
+                    f"回测将从 {pending_report_backtests[fund['code']]} 起重算",
+                ]
+            alerts.append(
+                {
+                    "code": fund["code"],
+                    "name": fund["name"],
+                    "fund_type": fund.get("type") or "其他",
+                    "type": "report_refresh_pending",
+                    "severity": "warning",
+                    "weight": 1,
+                    "message": (
+                        f"{fund['code']} {fund['name']} 持仓或回测更新待重试，"
+                        "当前保留上一版可用缓存"
+                    ),
+                    "details": details,
+                }
+            )
+        if fund["code"] in nav_errors_by_code:
+            alerts.append(
+                {
+                    "code": fund["code"],
+                    "name": fund["name"],
+                    "fund_type": fund.get("type") or "其他",
+                    "type": "nav_refresh_failed",
+                    "severity": "warning",
+                    "weight": 1,
+                    "message": f"{fund['code']} {fund['name']} 最近净值刷新失败，当前保留旧净值",
+                    "details": [nav_errors_by_code[fund["code"]]],
+                }
+            )
         if fund.get("status") == "error":
             alerts.append(
                 {
@@ -878,6 +1107,28 @@ def collect_data_alerts(
                 }
             )
             continue
+        if latest["data_quality"] == "outlier":
+            alerts.append(
+                {
+                    "code": fund["code"],
+                    "name": fund["name"],
+                    "fund_type": fund.get("type") or "其他",
+                    "type": "backtest_outlier",
+                    "severity": "warning",
+                    "weight": abs(latest["error_pct"] or 0),
+                    "message": (
+                        f"{fund['code']} {fund['name']} 最新回测 {latest['date']} "
+                        f"误差异常 {latest['error_pct']:.2%}"
+                    ),
+                    "details": {
+                        "date": latest["date"],
+                        "previous_date": latest["previous_date"],
+                        "error_pct": latest["error_pct"],
+                        "covered_weight": latest["covered_weight"],
+                    },
+                }
+            )
+            continue
         diagnostics = backtest_price_diagnostics(
             con,
             fund["code"],
@@ -917,15 +1168,20 @@ def collect_data_alerts(
 
 
 def alert_sort_key(item: dict) -> tuple:
+    severity_priority = {"error": 0, "warning": 1}.get(item.get("severity"), 2)
     type_priority = {
+        "valuation_error": 0,
+        "nav_refresh_failed": 0,
+        "report_refresh_pending": 0,
         "realtime_missing_quotes": 0,
         "realtime_fallback": 1,
         "backtest_data_quality": 2,
+        "backtest_outlier": 2,
         "stale_backtest": 3,
         "missing_backtest": 4,
     }.get(item.get("type"), 9)
     return (
-        item["severity"] != "warning",
+        severity_priority,
         type_priority,
         alert_fund_type_priority(item.get("fund_type")),
         -item.get("weight", 0),
@@ -986,17 +1242,50 @@ def quote_refresh_is_due(last_refresh_at: str | None) -> bool:
     return refresh_is_due(last_refresh_at, QUOTE_REFRESH_INTERVAL_SECONDS)
 
 
-def refresh_is_due(last_refresh_at: str | None, interval_seconds: int) -> bool:
+def refresh_is_due(
+    last_refresh_at: str | None,
+    interval_seconds: int,
+    now_at: str | None = None,
+) -> bool:
     if not last_refresh_at:
         return True
     try:
         from datetime import datetime
 
         last_refresh = datetime.fromisoformat(last_refresh_at)
-        now = datetime.fromisoformat(utc_now())
+        now = datetime.fromisoformat(now_at or utc_now())
     except ValueError:
         return True
     return (now - last_refresh).total_seconds() >= interval_seconds
+
+
+def nav_refresh_interval_seconds(con, today=None) -> int:
+    today = today or app_today()
+    if not is_trading_session("CN", today):
+        return NAV_NON_TRADING_REFRESH_INTERVAL_SECONDS
+    stats = get_meta(con, "last_navs_refresh_stats", {}) or {}
+    if stats.get("changed_count") == 0 and stats.get("failed_count") == 0:
+        return NAV_UNCHANGED_REFRESH_INTERVAL_SECONDS
+    return NAV_REFRESH_INTERVAL_SECONDS
+
+
+def report_refresh_interval_seconds(con) -> int:
+    stats = get_meta(con, "last_reports_refresh_stats", {}) or {}
+    pending = get_meta(con, "pending_report_backtests", {}) or {}
+    if stats.get("failed_count") or pending:
+        return REPORT_RETRY_INTERVAL_SECONDS
+    return REPORT_REFRESH_INTERVAL_SECONDS
+
+
+def refresh_cooldown_active(
+    last_started_at: float,
+    interval_seconds: int,
+    now: float | None = None,
+) -> bool:
+    if last_started_at <= 0:
+        return False
+    now = time.monotonic() if now is None else now
+    return now - last_started_at < interval_seconds
 
 
 def schedule_quote_refresh(secids: list[str]) -> bool:
@@ -1004,7 +1293,11 @@ def schedule_quote_refresh(secids: list[str]) -> bool:
     now = time.monotonic()
     if _quote_refresh_lock.locked():
         return True
-    if now - _quote_refresh_started_at < QUOTE_REFRESH_INTERVAL_SECONDS:
+    if refresh_cooldown_active(
+        _quote_refresh_started_at,
+        QUOTE_REFRESH_INTERVAL_SECONDS,
+        now,
+    ):
         return False
     if not _quote_refresh_lock.acquire(blocking=False):
         return True
@@ -1021,10 +1314,19 @@ def schedule_nav_refresh(update_backtests: bool = True) -> bool:
     now = time.monotonic()
     if _nav_refresh_lock.locked():
         return True
-    if now - _nav_refresh_started_at < NAV_REFRESH_INTERVAL_SECONDS:
+    if _report_refresh_lock.locked():
+        return False
+    if refresh_cooldown_active(
+        _nav_refresh_started_at,
+        NAV_REFRESH_INTERVAL_SECONDS,
+        now,
+    ):
         return False
     if not _nav_refresh_lock.acquire(blocking=False):
         return True
+    if _report_refresh_lock.locked():
+        _nav_refresh_lock.release()
+        return False
     _nav_refresh_started_at = now
     begin_refresh_progress("navs", "净值", "queued", total=len(FUNDS))
     invalidate_funds_payload_cache()
@@ -1039,11 +1341,17 @@ def schedule_incremental_backtest_refresh() -> tuple[bool, str]:
         return False, "增量回测已在刷新中"
     if _nav_refresh_lock.locked():
         return False, "净值刷新中，稍后再启动增量回测"
+    if _report_refresh_lock.locked():
+        return False, "持仓检查中，稍后再启动增量回测"
     if not _backtest_refresh_lock.acquire(blocking=False):
         return False, "增量回测已在刷新中"
     if not _nav_refresh_lock.acquire(blocking=False):
         _backtest_refresh_lock.release()
         return False, "净值刷新中，稍后再启动增量回测"
+    if _report_refresh_lock.locked():
+        _nav_refresh_lock.release()
+        _backtest_refresh_lock.release()
+        return False, "持仓检查中，稍后再启动增量回测"
     now = time.monotonic()
     _nav_refresh_started_at = now
     begin_refresh_progress("backtests", "增量回测", "queued")
@@ -1054,19 +1362,20 @@ def schedule_incremental_backtest_refresh() -> tuple[bool, str]:
 
 
 def refresh_navs_in_background(update_backtests: bool = True) -> None:
+    global _nav_refresh_started_at
     try:
         LOGGER.info("Nav refresh started: update_backtests=%s", update_backtests)
         started = time.monotonic()
-        with _refresh_write_lock:
-            with connect() as con:
-                result = refresh_navs(
-                    con,
-                    update_backtests=update_backtests,
-                    progress_callback=lambda progress: update_refresh_progress("navs", **progress),
-                )
+        with connect() as con:
+            result = refresh_navs(
+                con,
+                update_backtests=update_backtests,
+                progress_callback=lambda progress: update_refresh_progress("navs", **progress),
+            )
         LOGGER.info(
-            "Nav refresh completed in %.1fs: updated=%s failed=%s backtests=%s backtest_failed=%s",
+            "Nav refresh completed in %.1fs: checked=%s changed=%s failed=%s backtests=%s backtest_failed=%s",
             time.monotonic() - started,
+            len(result["checked"]),
             len(result["updated"]),
             len(result["failed"]),
             len(result["backtests_refreshed"]),
@@ -1074,31 +1383,37 @@ def refresh_navs_in_background(update_backtests: bool = True) -> None:
         )
         finish_refresh_progress(
             "navs",
-            "净值",
-            completed=len(result["updated"]) + len(result["failed"]),
+            "净值" if not result["failed"] else "净值部分完成",
+            status="done" if not result["failed"] else "partial",
+            completed=len(result["checked"]) + len(result["failed"]),
             total=len(FUNDS),
-            message=f"updated={len(result['updated'])} failed={len(result['failed'])}",
+            message=(
+                f"checked={len(result['checked'])} changed={len(result['updated'])} "
+                f"failed={len(result['failed'])}"
+            ),
         )
     except Exception:
         LOGGER.exception("Nav refresh failed")
         finish_refresh_progress("navs", "净值失败", status="error")
     finally:
         invalidate_funds_payload_cache()
+        _nav_refresh_started_at = time.monotonic()
         _nav_refresh_lock.release()
 
 
 def refresh_incremental_backtests_in_background() -> None:
+    global _nav_refresh_started_at
     try:
         LOGGER.info("Incremental backtest refresh started")
         started = time.monotonic()
-        with _refresh_write_lock:
-            with connect() as con:
-                set_meta(con, "backtests_disabled", False)
-                result = refresh_navs(
-                    con,
-                    update_backtests=True,
-                    progress_callback=lambda progress: update_refresh_progress("backtests", **progress),
-                )
+        with connect() as con:
+            set_meta(con, "backtests_disabled", False)
+            con.commit()
+            result = refresh_navs(
+                con,
+                update_backtests=True,
+                progress_callback=lambda progress: update_refresh_progress("backtests", **progress),
+            )
         LOGGER.info(
             "Incremental backtest refresh completed in %.1fs: nav_updated=%s nav_failed=%s backtests=%s backtest_failed=%s",
             time.monotonic() - started,
@@ -1123,6 +1438,7 @@ def refresh_incremental_backtests_in_background() -> None:
         finish_refresh_progress("backtests", "失败", status="error")
     finally:
         invalidate_funds_payload_cache()
+        _nav_refresh_started_at = time.monotonic()
         _nav_refresh_lock.release()
         _backtest_refresh_lock.release()
 
@@ -1131,13 +1447,12 @@ def refresh_quotes_in_background(secids: list[str]) -> None:
     try:
         LOGGER.info("Quote refresh started: secids=%s", len(set(secids)))
         started = time.monotonic()
-        with _refresh_write_lock:
-            with connect() as con:
-                result = refresh_quotes(
-                    con,
-                    secids,
-                    progress_callback=lambda progress: update_refresh_progress("quotes", **progress),
-                )
+        with connect() as con:
+            result = refresh_quotes(
+                con,
+                secids,
+                progress_callback=lambda progress: update_refresh_progress("quotes", **progress),
+            )
         LOGGER.info(
             "Quote refresh completed in %.1fs: requested=%s saved=%s missing=%s",
             time.monotonic() - started,
@@ -1160,16 +1475,94 @@ def refresh_quotes_in_background(secids: list[str]) -> None:
         _quote_refresh_lock.release()
 
 
+def schedule_report_refresh() -> bool:
+    global _report_refresh_started_at
+    now = time.monotonic()
+    if _report_refresh_lock.locked():
+        return True
+    if _nav_refresh_lock.locked() or _backtest_refresh_lock.locked():
+        return False
+    if refresh_cooldown_active(
+        _report_refresh_started_at,
+        REPORT_RETRY_INTERVAL_SECONDS,
+        now,
+    ):
+        return False
+    if not _report_refresh_lock.acquire(blocking=False):
+        return True
+    if _nav_refresh_lock.locked() or _backtest_refresh_lock.locked():
+        _report_refresh_lock.release()
+        return False
+    _report_refresh_started_at = now
+    begin_refresh_progress("reports", "持仓检查", "queued", total=len(FUNDS))
+    invalidate_funds_payload_cache()
+    thread = threading.Thread(target=refresh_reports_in_background, daemon=True)
+    thread.start()
+    return True
+
+
+def refresh_reports_in_background() -> None:
+    global _report_refresh_started_at
+    try:
+        LOGGER.info("Report refresh started: funds=%s", len(FUNDS))
+        started = time.monotonic()
+        with connect() as con:
+            result = refresh_reports(
+                con,
+                progress_callback=lambda progress: update_refresh_progress(
+                    "reports", **progress
+                ),
+            )
+        failure_count = len(result["failed_codes"])
+        LOGGER.info(
+            "Report refresh completed in %.1fs: checked=%s changed=%s refreshed=%s failed=%s backtests=%s",
+            time.monotonic() - started,
+            len(result["checked"]),
+            len(result["changed"]),
+            len(result["refreshed"]),
+            failure_count,
+            len(result["backtests_refreshed"]),
+        )
+        finish_refresh_progress(
+            "reports",
+            "持仓检查" if not failure_count else "持仓检查部分完成",
+            status="done" if not failure_count else "partial",
+            completed=len(FUNDS),
+            total=len(FUNDS),
+            message=(
+                f"checked={len(result['checked'])} changed={len(result['changed'])} "
+                f"refreshed={len(result['refreshed'])} failed={failure_count}"
+            ),
+        )
+    except Exception:
+        LOGGER.exception("Report refresh failed")
+        finish_refresh_progress("reports", "持仓检查失败", status="error")
+    finally:
+        invalidate_funds_payload_cache()
+        _report_refresh_started_at = time.monotonic()
+        _report_refresh_lock.release()
+
+
 def schedule_purchase_limit_refresh() -> bool:
     global _purchase_limit_refresh_started_at
     now = time.monotonic()
     if _purchase_limit_refresh_lock.locked():
         return True
-    if now - _purchase_limit_refresh_started_at < PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS:
+    if refresh_cooldown_active(
+        _purchase_limit_refresh_started_at,
+        PURCHASE_LIMIT_REFRESH_INTERVAL_SECONDS,
+        now,
+    ):
         return False
     if not _purchase_limit_refresh_lock.acquire(blocking=False):
         return True
     _purchase_limit_refresh_started_at = now
+    begin_refresh_progress(
+        "purchase_limits",
+        "申购限额",
+        "queued",
+        total=len(FUNDS),
+    )
     invalidate_funds_payload_cache()
     thread = threading.Thread(target=refresh_purchase_limits_in_background, daemon=True)
     thread.start()
@@ -1180,14 +1573,28 @@ def refresh_purchase_limits_in_background() -> None:
     try:
         LOGGER.info("Purchase limit refresh started")
         started = time.monotonic()
-        with _refresh_write_lock:
-            with connect() as con:
-                refresh_purchase_limits(con)
-        LOGGER.info("Purchase limit refresh completed in %.1fs", time.monotonic() - started)
+        with connect() as con:
+            result = refresh_purchase_limits(con)
+        LOGGER.info(
+            "Purchase limit refresh completed in %.1fs: saved=%s missing=%s",
+            time.monotonic() - started,
+            result["saved"],
+            len(result["missing"]),
+        )
+        finish_refresh_progress(
+            "purchase_limits",
+            "申购限额" if not result["missing"] else "申购限额部分完成",
+            status="done" if not result["missing"] else "partial",
+            completed=len(FUNDS),
+            total=len(FUNDS),
+            message=f"saved={result['saved']} missing={len(result['missing'])}",
+        )
     except (RequestException, ValueError):
         LOGGER.exception("Purchase limit refresh failed")
+        finish_refresh_progress("purchase_limits", "申购限额失败", status="error")
     except Exception:
         LOGGER.exception("Purchase limit refresh failed unexpectedly")
+        finish_refresh_progress("purchase_limits", "申购限额失败", status="error")
     finally:
         invalidate_funds_payload_cache()
         _purchase_limit_refresh_lock.release()

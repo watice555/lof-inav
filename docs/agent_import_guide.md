@@ -24,10 +24,10 @@
 | `config/fund_rules.json` | 每只基金的交易市场、代理规则、人工持仓、公告依据 |
 | `import_fund.py` | 单只基金导入入口 |
 | `build.py` | 全量构建入口，导入多只基金时较慢 |
-| `refresh_announcements.py` | 只刷新最新公告链接 |
-| `app/config.py` | 基金规则加载、汇率映射、Yahoo 代理符号映射 |
+| `refresh_announcements.py` | 刷新最新定期报告、公告链接、受影响持仓和回测 |
+| `app/config.py` | 基金规则加载、汇率映射、专用指数与 Yahoo 代理符号映射 |
 | `app/build.py` | 导入净值、公告、持仓、行情和回测的主逻辑 |
-| `app/sources.py` | 东方财富、Yahoo 等数据源请求和解析 |
+| `app/sources.py` | 东方财富、新浪、中证、恒生、Yahoo 等数据源请求和解析 |
 | `app/valuation.py` | 日内估值、回测、持仓可用日切换、汇率合成 |
 | `data/lof_inav.sqlite3` | 本地缓存数据库 |
 | `docs/lof_proxy_rules.md` | 代理规则和分类经验 |
@@ -54,9 +54,9 @@ largest errors: 最大误差日期
 python build.py
 ```
 
-全量构建会刷新所有配置基金的净值、持仓、行情和回测。基金数量变多后可能较慢，新增单只基金时优先用 `import_fund.py`。
+全量构建会刷新所有配置基金的净值、持仓、行情和回测，并按请求的回测净值日范围精确补齐价格窗口。基金数量变多后可能较慢，新增单只基金时优先用 `import_fund.py`。
 
-只刷新公告链接：
+刷新最新定期报告、公告链接和受影响持仓：
 
 ```powershell
 python refresh_announcements.py
@@ -71,7 +71,7 @@ python serve.py
 访问：
 
 ```text
-http://127.0.0.1:8001
+http://127.0.0.1:8000
 ```
 
 如果修改了 `config/fund_rules.json`，需要重启服务，因为 `FUNDS` 在模块导入时加载。
@@ -105,7 +105,8 @@ http://127.0.0.1:8001
 有场内价格
 最新公告链接存在
 最新持仓或代理不为空
-covered_weight 合理
+modeled_weight 与 covered_weight 合理
+priced_ratio 足够；不足时原因可解释
 missing_quotes 为空或能解释
 MAE、标准差、最大误差已记录
 note 不含临时占位描述
@@ -407,7 +408,7 @@ Core SENSEX India ETF 映射 INDY
 | 深市 LOF | `0.160924` |
 | 沪市 LOF | `1.501301` |
 | 港股 | `116.00883` |
-| 港股指数代理 | `100.HSI`、`100.HSCEI` |
+| 港股指数代理 | `100.HSI`、`100.HSCEI`；部分恒生专用指数使用 `124.*` |
 | 美股/Yahoo 代理 | `107.INDA`、`107.IXC` |
 | 黄金现货代理 | `122.XAU` |
 | WTI 原油代理 | `102.CL00Y` |
@@ -421,6 +422,8 @@ YAHOO_PRICE_SYMBOLS = {
 }
 ```
 
+中证主题/行业指数已经走中证指数官网盘中表现和历史导出接口，`124.*` 恒生专用指数走恒生指数官网接口。新增这两类指数时，应先扩展对应的官方代码映射，同时验证实时点位和历史序列，不要为了取价方便把指数映射成 ETF，因为 ETF 的折溢价和跟踪误差会改变估值与回测口径。
+
 如果商品/黄金回测需要用 Yahoo 日线收盘标记价，需要在 `US_EQUITY_CLOSE_MARKS` 增加映射：
 
 ```python
@@ -429,7 +432,7 @@ US_EQUITY_CLOSE_MARKS = {
 }
 ```
 
-注意：修改标记价来源后，可能需要清旧 `mark_prices`，否则新旧价格尺度混在一起。
+注意：修改标记价来源或价格尺度后，应同步更新缓存版本/来源口径并重建相关价格；必要时可以删除旧缓存重新构建，避免新旧价格尺度混在一起。
 `mark_prices` 只服务回测口径。实时估值如果要从最新净值日推进到当前价，基准价必须与实时行情同一 `secid`、同一价格尺度；不要用 IAU、USO 等 Yahoo 标记价作为 `122.XAU`、`102.CL00Y` 等连续行情的实时基准价。
 
 实时估值跨过最新净值日时，如果缺少同一 `secid` 的净值日基准价，不要用实时行情的单日 `pct` 兜底。该资产应进入 `missing_quotes`，并通过数据警报显示“实时资产收益无法计算”。只有在没有最新净值日期，或无法判断行情日期时，才允许使用 `pct` 或 `price / previous_close - 1` 作为降级估算，并需要查看 `realtime_warnings` 确认降级原因。
@@ -469,8 +472,12 @@ MAE
 最大绝对误差
 最新误差
 平均覆盖权重
+平均建模权重
+平均取价比例
 最大误差日期
 ```
+
+`modeled_weight` 是规则明确建模的资产权重，`covered_weight` 是其中成功取价的权重，`priced_ratio = covered_weight / modeled_weight`。基金本身股票或风险资产占比低时，低 `modeled_weight` 只应作为柔和提示；只有 `priced_ratio < 60%` 才标记 `low_coverage`，此时应先排查行情和汇率缺口。
 
 粗略阈值：
 
@@ -590,7 +597,7 @@ MAE
 163118 申万菱信中证申万医药生物指数 LOF
 错误代理：0.399808，行情返回 中证新能
 正确代理：1.000808，指数为 中证申万医药生物指数
-后续风险：当前 000808 近日日线源需要继续补稳定来源，否则回测 count 可能为 0。
+历史日线：该类中证指数走中证指数官网导出接口；仍需核对返回指数代码、日期范围和价格来源标记。
 ```
 
 批量检查命令：

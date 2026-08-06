@@ -1,28 +1,128 @@
 from __future__ import annotations
 
+import io
 import json
+import logging
 import math
+import os
 import re
+import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from html import unescape
 from typing import Any, Callable
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import pandas as pd
 import requests
 from requests import RequestException
 from bs4 import BeautifulSoup
 
 from .config import EASTMONEY_HEADERS, SINA_PRICE_SYMBOLS, YAHOO_PRICE_SYMBOLS
+from .market_calendar import historical_price_market
 
 
 RealtimeProgressCallback = Callable[[dict[str, Any]], None]
+RealtimeDiagnostics = list[dict[str, Any]]
+LOGGER = logging.getLogger(__name__)
+_REALTIME_DIAGNOSTICS_LOCK = threading.Lock()
+
+
+def _positive_env_seconds(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+DAILY_PRICE_INSTRUMENT_DEADLINE_SECONDS = _positive_env_seconds(
+    "LOF_INAV_PRICE_INSTRUMENT_DEADLINE_SECONDS",
+    90.0,
+)
+DAILY_PRICE_BATCH_DEADLINE_SECONDS = _positive_env_seconds(
+    "LOF_INAV_PRICE_BATCH_DEADLINE_SECONDS",
+    15 * 60.0,
+)
+_DAILY_PRICE_DEADLINE: ContextVar[float | None] = ContextVar(
+    "daily_price_deadline",
+    default=None,
+)
+
+
+class DailyPriceDeadlineExceeded(TimeoutError):
+    """A historical-price operation exhausted its absolute time budget."""
+
+
+@contextmanager
+def daily_price_deadline(deadline: float):
+    current = _DAILY_PRICE_DEADLINE.get()
+    effective = min(current, deadline) if current is not None else deadline
+    token = _DAILY_PRICE_DEADLINE.set(effective)
+    try:
+        yield effective
+    finally:
+        _DAILY_PRICE_DEADLINE.reset(token)
+
+
+def _daily_price_deadline_remaining() -> float | None:
+    deadline = _DAILY_PRICE_DEADLINE.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _raise_if_daily_price_deadline_exceeded(operation: str) -> None:
+    remaining = _daily_price_deadline_remaining()
+    if remaining is not None and remaining <= 0:
+        raise DailyPriceDeadlineExceeded(f"{operation} exceeded its absolute deadline")
+
+
+def _request_timeout_within_deadline(timeout: float) -> float:
+    remaining = _daily_price_deadline_remaining()
+    if remaining is None:
+        return timeout
+    if remaining <= 0:
+        raise DailyPriceDeadlineExceeded("historical-price request exceeded its absolute deadline")
+    return max(0.001, min(timeout, remaining))
+
+
+def _sleep_within_daily_price_deadline(seconds: float, operation: str) -> None:
+    remaining = _daily_price_deadline_remaining()
+    if remaining is None:
+        time.sleep(seconds)
+        return
+    if remaining <= 0:
+        raise DailyPriceDeadlineExceeded(f"{operation} exceeded its absolute deadline")
+    time.sleep(min(seconds, remaining))
+    _raise_if_daily_price_deadline_exceeded(operation)
+
+
+@contextmanager
+def _lock_within_daily_price_deadline(lock: threading.Lock, operation: str):
+    remaining = _daily_price_deadline_remaining()
+    if remaining is None:
+        acquired = lock.acquire()
+    elif remaining <= 0:
+        acquired = False
+    else:
+        acquired = lock.acquire(timeout=remaining)
+    if not acquired:
+        raise DailyPriceDeadlineExceeded(f"{operation} exceeded its absolute deadline")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def app_today():
+    return datetime.now(CHINA_TZ).date()
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -46,6 +146,36 @@ EASTMONEY_INDEX_SECIDS = {
     "124.HSSI",
     "124.HSTECH",
 }
+CSINDEX_INDEX_SECIDS = {
+    "1.000808",
+    "1.000841",
+    "1.000961",
+    "1.000979",
+    "1.000998",
+    "2.930641",
+    "2.930713",
+    "2.930720",
+    "2.930721",
+    "2.930743",
+    "2.930790",
+    "2.930791",
+    "2.930820",
+    "2.930875",
+    "2.930914",
+    "2.931068",
+    "2.931136",
+    "2.H30094",
+}
+CSINDEX_REQUEST_INTERVAL_SECONDS = 0.25
+_CSINDEX_REQUEST_LOCK = threading.Lock()
+_csindex_last_request_at = 0.0
+HANG_SENG_INDEX_SERIES = {
+    "124.HSFML25": ("hschk25", "00021.00"),
+    "124.HSHKI": ("hshkis", "02019.00"),
+    "124.HSMI": ("sizeindexes", "00013.00"),
+    "124.HSSI": ("sizeindexes", "00016.00"),
+    "124.HSTECH": ("hstech", "02083.00"),
+}
 PURCHASE_LIMIT_UNBOUNDED_SORT_VALUE = 1_000_000_000_000_000.0
 
 
@@ -56,14 +186,54 @@ def _get(url: str, **kwargs: Any) -> requests.Response:
     attempts = kwargs.pop("attempts", 3)
     last_error: Exception | None = None
     for attempt in range(attempts):
+        _raise_if_daily_price_deadline_exceeded(f"GET {url}")
         try:
-            response = requests.get(url, headers=headers, timeout=timeout, **kwargs)
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=_request_timeout_within_deadline(timeout),
+                **kwargs,
+            )
             response.raise_for_status()
+            _raise_if_daily_price_deadline_exceeded(f"GET {url}")
             return response
         except requests.RequestException as exc:
             last_error = exc
             if attempt + 1 < attempts:
-                time.sleep(0.5 * (attempt + 1))
+                _sleep_within_daily_price_deadline(
+                    0.5 * (attempt + 1),
+                    f"GET {url}",
+                )
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"request failed: {url}")
+
+
+def _post(url: str, **kwargs: Any) -> requests.Response:
+    headers = dict(EASTMONEY_HEADERS)
+    headers.update(kwargs.pop("headers", {}))
+    timeout = kwargs.pop("timeout", 20)
+    attempts = kwargs.pop("attempts", 3)
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        _raise_if_daily_price_deadline_exceeded(f"POST {url}")
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                timeout=_request_timeout_within_deadline(timeout),
+                **kwargs,
+            )
+            response.raise_for_status()
+            _raise_if_daily_price_deadline_exceeded(f"POST {url}")
+            return response
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                _sleep_within_daily_price_deadline(
+                    0.5 * (attempt + 1),
+                    f"POST {url}",
+                )
     if last_error:
         raise last_error
     raise RuntimeError(f"request failed: {url}")
@@ -159,7 +329,8 @@ def fetch_holdings(
     code: str, stock_codes: list[str], years: list[int] | None = None
 ) -> list[tuple[str, list[dict[str, Any]]]]:
     if years is None:
-        years = [datetime.now().year, datetime.now().year - 1]
+        current_year = app_today().year
+        years = [current_year, current_year - 1]
     periods: list[tuple[str, list[dict[str, Any]]]] = []
     seen: set[str] = set()
     for year in years:
@@ -248,18 +419,44 @@ def emit_realtime_progress(
         )
 
 
+def record_realtime_source_error(
+    diagnostics: RealtimeDiagnostics | None,
+    source: str,
+    secids: list[str] | tuple[str, ...],
+    exc: Exception,
+) -> None:
+    error = f"{type(exc).__name__}: {exc}"[:500]
+    if diagnostics is not None:
+        entry = {
+            "source": source,
+            "secids": sorted(set(secids)),
+            "error": error,
+        }
+        with _REALTIME_DIAGNOSTICS_LOCK:
+            diagnostics.append(entry)
+
+
 def fetch_realtime_quotes(
     secids: list[str],
     progress_callback: RealtimeProgressCallback | None = None,
+    diagnostics: RealtimeDiagnostics | None = None,
 ) -> list[dict[str, Any]]:
     if not secids:
         return []
     rows: list[dict[str, Any]] = []
-    special = {"113.agm", *EASTMONEY_INDEX_SECIDS}
+    special = {
+        "113.agm",
+        *EASTMONEY_INDEX_SECIDS,
+        *CSINDEX_INDEX_SECIDS,
+        *HANG_SENG_INDEX_SERIES,
+    }
     special_secids = [secid for secid in secids if secid in special]
     emit_realtime_progress(progress_callback, "quotes_start", 0, f"准备 {len(secids)} 个标的")
     with ThreadPoolExecutor(max_workers=min(8, len(special_secids) or 1)) as executor:
-        futures = {executor.submit(special_realtime_quote, secid): secid for secid in special_secids}
+        futures = {
+            executor.submit(special_realtime_quote, secid, diagnostics): secid
+            for secid in special_secids
+        }
         completed = 0
         for future in as_completed(futures):
             completed += 1
@@ -267,8 +464,13 @@ def fetch_realtime_quotes(
                 quote = future.result()
                 if quote:
                     rows.append(quote)
-            except RequestException:
-                pass
+            except RequestException as exc:
+                record_realtime_source_error(
+                    diagnostics,
+                    "special_realtime",
+                    [futures[future]],
+                    exc,
+                )
             emit_realtime_progress(
                 progress_callback,
                 "quotes_special",
@@ -287,8 +489,13 @@ def fetch_realtime_quotes(
             completed += 1
             try:
                 rows.extend(future.result())
-            except RequestException:
-                pass
+            except RequestException as exc:
+                record_realtime_source_error(
+                    diagnostics,
+                    "eastmoney_batch",
+                    futures[future],
+                    exc,
+                )
             emit_realtime_progress(
                 progress_callback,
                 "quotes_eastmoney",
@@ -301,8 +508,8 @@ def fetch_realtime_quotes(
     for index, batch in enumerate(cn_batches, start=1):
         try:
             rows.extend(sina_cn_realtime_quotes(batch))
-        except (RequestException, ValueError, IndexError):
-            pass
+        except (RequestException, ValueError, IndexError) as exc:
+            record_realtime_source_error(diagnostics, "sina_cn_batch", batch, exc)
         emit_realtime_progress(
             progress_callback,
             "quotes_sina_cn",
@@ -312,13 +519,22 @@ def fetch_realtime_quotes(
     seen = {row["secid"] for row in rows}
     fallback_secids = [secid for secid in secids if secid not in seen]
     with ThreadPoolExecutor(max_workers=min(4, len(fallback_secids) or 1)) as executor:
-        futures = {executor.submit(fallback_realtime_quote, secid): secid for secid in fallback_secids}
+        futures = {
+            executor.submit(fallback_realtime_quote, secid, diagnostics): secid
+            for secid in fallback_secids
+        }
         completed = 0
         for future in as_completed(futures):
             completed += 1
             try:
                 quote = future.result()
-            except Exception:
+            except Exception as exc:
+                record_realtime_source_error(
+                    diagnostics,
+                    "fallback_realtime",
+                    [futures[future]],
+                    exc,
+                )
                 quote = None
             if quote:
                 rows.append(quote)
@@ -332,31 +548,56 @@ def fetch_realtime_quotes(
     return rows
 
 
-def special_realtime_quote(secid: str) -> dict[str, Any] | None:
+def special_realtime_quote(
+    secid: str,
+    diagnostics: RealtimeDiagnostics | None = None,
+) -> dict[str, Any] | None:
     if secid == "113.agm":
         return eastmoney_futures_quote(secid)
+    if secid in CSINDEX_INDEX_SECIDS:
+        try:
+            quote = csindex_realtime_quote(secid)
+            if quote:
+                return quote
+        except (RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            record_realtime_source_error(diagnostics, "csindex", [secid], exc)
+        return eastmoney_index_quote(secid)
+    if secid in HANG_SENG_INDEX_SERIES:
+        try:
+            quote = hang_seng_index_realtime_quote(secid)
+            if quote:
+                return quote
+        except (RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            record_realtime_source_error(diagnostics, "hang_seng", [secid], exc)
+        return eastmoney_index_quote(secid)
     if secid in EASTMONEY_INDEX_SECIDS:
         return eastmoney_index_quote(secid)
     return None
 
 
-def fallback_realtime_quote(secid: str) -> dict[str, Any] | None:
+def fallback_realtime_quote(
+    secid: str,
+    diagnostics: RealtimeDiagnostics | None = None,
+) -> dict[str, Any] | None:
     symbol = yahoo_price_symbol(secid)
     quote = None
     if symbol:
         try:
             quote = yahoo_realtime_quote(secid, symbol)
-        except (RequestException, KeyError, IndexError, TypeError, ValueError):
+        except (RequestException, KeyError, IndexError, TypeError, ValueError) as exc:
+            record_realtime_source_error(diagnostics, "yahoo", [secid], exc)
             quote = None
     if not quote:
         try:
             quote = sina_realtime_quote(secid)
-        except (RequestException, ValueError, IndexError):
+        except (RequestException, ValueError, IndexError) as exc:
+            record_realtime_source_error(diagnostics, "sina", [secid], exc)
             quote = None
     if not quote:
         try:
             quote = sina_cn_realtime_quote(secid)
-        except (RequestException, ValueError, IndexError):
+        except (RequestException, ValueError, IndexError) as exc:
+            record_realtime_source_error(diagnostics, "sina_cn", [secid], exc)
             quote = None
     return quote
 
@@ -396,11 +637,51 @@ def eastmoney_realtime_batch(secids: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
-def fetch_daily_prices(secid: str, begin: str = "20240101", end: str = "20500101") -> list[dict[str, Any]]:
+def fetch_daily_prices(
+    secid: str,
+    begin: str = "20240101",
+    end: str = "20500101",
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
+    active_deadline = _DAILY_PRICE_DEADLINE.get()
+    deadline = deadline or active_deadline or (
+        time.monotonic() + DAILY_PRICE_INSTRUMENT_DEADLINE_SECONDS
+    )
+    with daily_price_deadline(deadline):
+        try:
+            return _fetch_daily_prices_with_deadline(secid, begin, end)
+        except DailyPriceDeadlineExceeded as exc:
+            raise DailyPriceDeadlineExceeded(
+                f"historical price deadline exceeded for {secid}"
+            ) from exc
+
+
+def _fetch_daily_prices_with_deadline(
+    secid: str,
+    begin: str,
+    end: str,
+) -> list[dict[str, Any]]:
     if secid == "113.agm":
         return _best_daily_price_rows(
             [
                 lambda: sina_futures_daily_prices(secid, "AG0", begin, end),
+            ],
+            require_weekday_continuity=False,
+        )
+    if secid in HANG_SENG_INDEX_SERIES:
+        return _best_daily_price_rows(
+            [
+                lambda: hang_seng_index_daily_prices(secid, begin, end),
+                lambda: eastmoney_index_daily_prices(secid, begin, end),
+            ],
+            require_weekday_continuity=False,
+        )
+    if secid in CSINDEX_INDEX_SECIDS:
+        return _best_daily_price_rows(
+            [
+                lambda: csindex_daily_prices(secid, begin, end),
+                lambda: eastmoney_index_daily_prices(secid, begin, end),
+                lambda: sina_cn_daily_prices(secid, begin, end),
             ],
             require_weekday_continuity=False,
         )
@@ -410,7 +691,7 @@ def fetch_daily_prices(secid: str, begin: str = "20240101", end: str = "20500101
                 lambda: eastmoney_index_daily_prices(secid, begin, end),
                 lambda: sina_cn_daily_prices(secid, begin, end),
             ],
-            require_weekday_continuity=True,
+            require_weekday_continuity=False,
         )
     yahoo_symbol = yahoo_price_symbol(secid)
     if yahoo_symbol and is_a_share_stock_secid(secid):
@@ -441,20 +722,23 @@ def _best_daily_price_rows(
     require_weekday_continuity: bool,
     attempts_per_source: int = 3,
 ) -> list[dict[str, Any]]:
-    best_rows: list[dict[str, Any]] = []
     for fetch in candidates:
         for attempt in range(attempts_per_source):
+            _raise_if_daily_price_deadline_exceeded("historical price source retries")
             try:
                 rows = fetch()
+            except DailyPriceDeadlineExceeded:
+                raise
             except Exception:
                 rows = []
             if _daily_price_rows_are_valid(rows, require_weekday_continuity):
                 return rows
-            if len(rows) > len(best_rows):
-                best_rows = rows
             if attempt + 1 < attempts_per_source:
-                time.sleep(0.5 * (attempt + 1))
-    return best_rows
+                _sleep_within_daily_price_deadline(
+                    0.5 * (attempt + 1),
+                    "historical price source retries",
+                )
+    return []
 
 
 def _daily_price_rows_are_valid(rows: list[dict[str, Any]], require_weekday_continuity: bool) -> bool:
@@ -463,14 +747,10 @@ def _daily_price_rows_are_valid(rows: list[dict[str, Any]], require_weekday_cont
     dates = []
     last_date = None
     for row in rows:
-        date_text = row.get("date")
-        try:
-            date = datetime.fromisoformat(date_text).date()
-        except (TypeError, ValueError):
+        normalized = normalize_daily_price_row(row)
+        if normalized is None:
             return False
-        close = _to_float(row.get("close"))
-        if close is None or close <= 0 or not math.isfinite(close):
-            return False
+        date = datetime.fromisoformat(normalized["date"]).date()
         if last_date and date <= last_date:
             return False
         dates.append(date)
@@ -486,6 +766,84 @@ def _has_missing_weekday_between_rows(dates) -> bool:
                 return True
             day += timedelta(days=1)
     return False
+
+
+def normalize_daily_price_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    date_text = row.get("date")
+    if not isinstance(date_text, str):
+        return None
+    try:
+        parsed_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    close = _to_float(row.get("close"))
+    if close is None or close <= 0 or not math.isfinite(close):
+        return None
+    pct = _to_float(row.get("pct"))
+    if pct is not None and (not math.isfinite(pct) or abs(pct) > 1000):
+        pct = None
+    return {
+        "date": parsed_date.isoformat(),
+        "close": close,
+        "pct": pct,
+        "source": str(row.get("source") or "unknown"),
+        "adjustment": str(row.get("adjustment") or "unknown"),
+    }
+
+
+def normalize_realtime_quote(row: dict[str, Any]) -> dict[str, Any] | None:
+    secid = row.get("secid")
+    if not isinstance(secid, str) or "." not in secid:
+        return None
+    try:
+        market_text, default_symbol = secid.split(".", 1)
+        market = int(row.get("market", market_text))
+    except (TypeError, ValueError):
+        return None
+    price = _to_float(row.get("price"))
+    if price is None or price <= 0 or not math.isfinite(price):
+        return None
+    previous_close = _to_float(row.get("previous_close"))
+    if previous_close is not None and (
+        previous_close <= 0 or not math.isfinite(previous_close)
+    ):
+        previous_close = None
+    pct = _to_float(row.get("pct"))
+    if pct is not None and (not math.isfinite(pct) or abs(pct) > 1000):
+        pct = None
+    quote_time = row.get("quote_time")
+    session_date = quote_session_date(secid, quote_time)
+    return {
+        "secid": secid,
+        "symbol": str(row.get("symbol") or default_symbol),
+        "market": market,
+        "name": str(row.get("name") or default_symbol),
+        "price": price,
+        "pct": pct,
+        "previous_close": previous_close,
+        "quote_time": quote_time,
+        "session_date": session_date,
+    }
+
+
+def quote_session_date(secid: str, quote_time: Any) -> str | None:
+    if not quote_time:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(str(quote_time).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    market = historical_price_market(secid)
+    if market == "US":
+        try:
+            target_tz = ZoneInfo("America/New_York")
+        except ZoneInfoNotFoundError:
+            target_tz = timezone(timedelta(hours=-5))
+    else:
+        target_tz = CHINA_TZ
+    return timestamp.astimezone(target_tz).date().isoformat()
 
 
 def is_cn_exchange_secid(secid: str) -> bool:
@@ -634,6 +992,142 @@ def eastmoney_index_trends_quote(secid: str) -> dict[str, Any] | None:
     }
 
 
+def _hang_seng_index_item(document: dict[str, Any], secid: str) -> dict[str, Any]:
+    mapping = HANG_SENG_INDEX_SERIES.get(secid)
+    if not mapping:
+        raise ValueError(f"unsupported Hang Seng index: {secid}")
+    target_code = mapping[1]
+    matches: list[dict[str, Any]] = []
+
+    def visit(items: Any) -> None:
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("indexCode") == target_code:
+                matches.append(item)
+            visit(item.get("subIndexList"))
+
+    for series in document.get("indexSeriesList") or []:
+        if isinstance(series, dict):
+            visit(series.get("indexList"))
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one Hang Seng index {target_code}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _positive_finite_float(value: Any, label: str) -> float:
+    parsed = _to_float(value)
+    if parsed is None or parsed <= 0 or not math.isfinite(parsed):
+        raise ValueError(f"invalid {label}: {value!r}")
+    return parsed
+
+
+def hang_seng_index_realtime_quote(secid: str) -> dict[str, Any] | None:
+    mapping = HANG_SENG_INDEX_SERIES.get(secid)
+    if not mapping:
+        return None
+    series, _ = mapping
+    document = _get(
+        f"https://www.hsi.com.hk/data/eng/rt/index-series/{series}/performance.do",
+        headers={"Referer": "https://www.hsi.com.hk/"},
+        timeout=10,
+        attempts=2,
+    ).json()
+    item = _hang_seng_index_item(document, secid)
+    price = _positive_finite_float(item.get("indexValue"), "index value")
+    previous = _positive_finite_float(item.get("previousClose"), "previous close")
+    last_update = datetime.strptime(
+        str(item.get("lastUpdate")), "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=CHINA_TZ)
+    market, symbol = secid.split(".", 1)
+    return {
+        "secid": secid,
+        "symbol": symbol,
+        "market": int(market),
+        "name": str(item.get("indexName") or symbol),
+        "price": price,
+        "pct": (price / previous - 1) * 100,
+        "previous_close": previous,
+        "quote_time": last_update.astimezone(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def hang_seng_index_daily_prices(
+    secid: str,
+    begin: str = "20240101",
+    end: str = "20500101",
+) -> list[dict[str, Any]]:
+    mapping = HANG_SENG_INDEX_SERIES.get(secid)
+    if not mapping:
+        return []
+    begin_date = datetime.strptime(begin, "%Y%m%d").date()
+    end_date = min(datetime.strptime(end, "%Y%m%d").date(), app_today())
+    if begin_date > end_date:
+        return []
+    series, _ = mapping
+    document = _get(
+        f"https://www.hsi.com.hk/data/eng/index-series/{series}/chart-rebased.json",
+        headers={"Referer": "https://www.hsi.com.hk/"},
+        timeout=20,
+        attempts=2,
+    ).json()
+    item = _hang_seng_index_item(document, secid)
+    points = item.get("indexLevels-5y")
+    if not isinstance(points, list) or not points:
+        raise ValueError(f"missing Hang Seng chart points for {secid}")
+
+    parsed_points: list[tuple[str, float]] = []
+    previous_timestamp: float | None = None
+    for point in points:
+        if not isinstance(point, list) or len(point) < 2:
+            raise ValueError(f"invalid Hang Seng chart point for {secid}")
+        timestamp = float(point[0])
+        value = _positive_finite_float(point[1], "rebased index value")
+        if not math.isfinite(timestamp) or (
+            previous_timestamp is not None and timestamp <= previous_timestamp
+        ):
+            raise ValueError(f"unordered Hang Seng chart for {secid}")
+        previous_timestamp = timestamp
+        date = (
+            datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+            .astimezone(CHINA_TZ)
+            .date()
+            .isoformat()
+        )
+        parsed_points.append((date, value))
+    if not math.isclose(parsed_points[0][1], 100.0, abs_tol=1e-9):
+        raise ValueError(f"unexpected Hang Seng chart base for {secid}")
+    last_update = datetime.strptime(
+        str(item.get("lastUpdate")), "%Y-%m-%d %H:%M:%S"
+    ).date().isoformat()
+    if parsed_points[-1][0] != last_update:
+        raise ValueError(f"mismatched Hang Seng chart date for {secid}")
+
+    latest_close = _positive_finite_float(item.get("previousClose"), "latest close")
+    scale = latest_close / parsed_points[-1][1]
+    rows = []
+    previous_value = None
+    begin_iso = begin_date.isoformat()
+    end_iso = end_date.isoformat()
+    for date, value in parsed_points:
+        pct = (value / previous_value - 1) * 100 if previous_value else None
+        previous_value = value
+        if date < begin_iso or date > end_iso:
+            continue
+        rows.append(
+            {
+                "date": date,
+                "close": value * scale,
+                "pct": pct,
+                "source": "hang_seng_indexes_chart",
+                "adjustment": "rebased_scaled",
+            }
+        )
+    return rows
+
+
 def eastmoney_daily_prices(secid: str, begin: str = "20240101", end: str = "20500101") -> list[dict[str, Any]]:
     response = _get(
         "https://push2his.eastmoney.com/api/qt/stock/kline/get",
@@ -673,10 +1167,171 @@ def eastmoney_index_daily_prices(secid: str, begin: str = "20240101", end: str =
                 return rows
         except RequestException as exc:
             last_error = exc
-        time.sleep(0.8)
+        _sleep_within_daily_price_deadline(0.8, f"Eastmoney index {secid}")
     if last_error:
         raise last_error
     return []
+
+
+def csindex_daily_prices(
+    secid: str,
+    begin: str = "20240101",
+    end: str = "20500101",
+) -> list[dict[str, Any]]:
+    if secid not in CSINDEX_INDEX_SECIDS:
+        return []
+    begin_date = datetime.strptime(begin, "%Y%m%d").date()
+    end_date = min(datetime.strptime(end, "%Y%m%d").date(), app_today())
+    if begin_date > end_date:
+        return []
+
+    # The CSI export may synthesize a row on an initial non-trading day using
+    # the next session's close. Start earlier, then discard the padded range.
+    request_begin = begin_date - timedelta(days=14)
+    payload = [
+        {
+            "startDate": request_begin.strftime("%Y%m%d"),
+            "endDate": end_date.strftime("%Y%m%d"),
+            "indexCode": secid.split(".", 1)[1],
+        }
+    ]
+    global _csindex_last_request_at
+    with _lock_within_daily_price_deadline(
+        _CSINDEX_REQUEST_LOCK,
+        f"CSI index {secid} rate limit",
+    ):
+        wait_seconds = CSINDEX_REQUEST_INTERVAL_SECONDS - (
+            time.monotonic() - _csindex_last_request_at
+        )
+        if wait_seconds > 0:
+            _sleep_within_daily_price_deadline(
+                wait_seconds,
+                f"CSI index {secid} rate limit",
+            )
+        try:
+            response = _post(
+                "https://www.csindex.com.cn/csindex-home/exportExcel/downloadindex-perf?language=CH",
+                json=payload,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Content-Type": "application/json",
+                    "Referer": "https://www.csindex.com.cn/",
+                },
+                timeout=30,
+                attempts=2,
+            )
+        finally:
+            _csindex_last_request_at = time.monotonic()
+    return _parse_csindex_daily_workbook(
+        response.content,
+        begin_date.isoformat(),
+        end_date.isoformat(),
+        secid.split(".", 1)[1],
+    )
+
+
+def csindex_realtime_quote(secid: str) -> dict[str, Any] | None:
+    if secid not in CSINDEX_INDEX_SECIDS:
+        return None
+    index_code = secid.split(".", 1)[1]
+    global _csindex_last_request_at
+    with _CSINDEX_REQUEST_LOCK:
+        wait_seconds = CSINDEX_REQUEST_INTERVAL_SECONDS - (
+            time.monotonic() - _csindex_last_request_at
+        )
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        try:
+            document = _get(
+                "https://www.csindex.com.cn/csindex-home/perf/index-perf-oneday",
+                params={"indexCode": index_code},
+                headers={"Referer": "https://www.csindex.com.cn/"},
+                timeout=10,
+                attempts=2,
+            ).json()
+        finally:
+            _csindex_last_request_at = time.monotonic()
+    header = ((document.get("data") or {}).get("intraDayHeader") or {})
+    if str(header.get("indexCode") or "") != index_code:
+        return None
+    price = _to_float(header.get("current"))
+    previous_close = _to_float(header.get("closePre"))
+    if price is None or price <= 0:
+        return None
+    trade_date = str(header.get("tradeDate") or "")
+    trade_time = str(header.get("tradeTime") or "")
+    quote_time = None
+    try:
+        quote_time = (
+            datetime.fromisoformat(f"{trade_date}T{trade_time}")
+            .replace(tzinfo=CHINA_TZ)
+            .astimezone(timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+    except ValueError:
+        pass
+    pct = _to_float(header.get("changePct"))
+    if pct is None and previous_close and previous_close > 0:
+        pct = (price / previous_close - 1) * 100
+    name = index_code
+    for item in (document.get("data") or {}).get("intraDayPerfList") or []:
+        if str(item.get("indexCode") or "") == index_code and item.get("indexName"):
+            name = str(item["indexName"])
+            break
+    return {
+        "secid": secid,
+        "symbol": index_code,
+        "market": int(secid.split(".", 1)[0]),
+        "name": name,
+        "price": price,
+        "pct": pct,
+        "previous_close": previous_close,
+        "quote_time": quote_time,
+    }
+
+
+def _parse_csindex_daily_workbook(
+    content: bytes,
+    begin_date: str,
+    end_date: str,
+    index_code: str,
+) -> list[dict[str, Any]]:
+    if not content.startswith(b"PK"):
+        return []
+    with zipfile.ZipFile(io.BytesIO(content)) as workbook:
+        sheet = ElementTree.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rows = []
+    for row in sheet.findall(".//x:sheetData/x:row", namespace):
+        values: dict[str, str] = {}
+        for cell in row.findall("x:c", namespace):
+            reference = cell.get("r") or ""
+            column_match = re.match(r"[A-Z]+", reference)
+            if not column_match:
+                continue
+            value = cell.findtext("x:is/x:t", default="", namespaces=namespace)
+            if not value:
+                value = cell.findtext("x:v", default="", namespaces=namespace)
+            values[column_match.group(0)] = value
+        raw_date = values.get("A", "")
+        if values.get("B") != index_code or not re.fullmatch(r"\d{8}", raw_date):
+            continue
+        date = datetime.strptime(raw_date, "%Y%m%d").date().isoformat()
+        if date < begin_date or date > end_date:
+            continue
+        close = _to_float(values.get("J"))
+        if close is None:
+            continue
+        rows.append(
+            {
+                "date": date,
+                "close": close,
+                "pct": _to_float(values.get("L")),
+                "source": "csindex",
+                "adjustment": "raw",
+            }
+        )
+    return rows
 
 
 def _parse_eastmoney_daily_rows(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -684,7 +1339,15 @@ def _parse_eastmoney_daily_rows(response: dict[str, Any]) -> list[dict[str, Any]
     rows = []
     for line in data.get("klines") or []:
         parts = line.split(",")
-        rows.append({"date": parts[0], "close": float(parts[2]), "pct": _to_float(parts[8])})
+        rows.append(
+            {
+                "date": parts[0],
+                "close": float(parts[2]),
+                "pct": _to_float(parts[8]),
+                "source": "eastmoney",
+                "adjustment": "forward",
+            }
+        )
     return rows
 
 
@@ -710,7 +1373,15 @@ def sina_futures_daily_prices(secid: str, symbol: str, begin: str = "20240101", 
         if close is None:
             continue
         pct = (close / previous_close - 1) * 100 if previous_close else None
-        rows.append({"date": date, "close": close, "pct": pct})
+        rows.append(
+            {
+                "date": date,
+                "close": close,
+                "pct": pct,
+                "source": "sina_futures",
+                "adjustment": "raw",
+            }
+        )
         previous_close = close
     return rows
 
@@ -953,7 +1624,15 @@ def sina_cn_daily_prices(secid: str, begin: str = "20240101", end: str = "205001
         if close is None:
             continue
         pct = (close / previous_close - 1) * 100 if previous_close else None
-        rows.append({"date": date, "close": close, "pct": pct})
+        rows.append(
+            {
+                "date": date,
+                "close": close,
+                "pct": pct,
+                "source": "sina",
+                "adjustment": "raw",
+            }
+        )
         previous_close = close
     return rows
 
@@ -989,7 +1668,15 @@ def yahoo_daily_prices(secid: str, symbol: str, begin: str = "20240101", end: st
         date = datetime.fromtimestamp(ts, tz=quote_tz).date().isoformat()
         close = float(close)
         pct = (close / previous_close - 1) * 100 if previous_close else None
-        rows.append({"date": date, "close": close, "pct": pct})
+        rows.append(
+            {
+                "date": date,
+                "close": close,
+                "pct": pct,
+                "source": "yahoo",
+                "adjustment": "raw",
+            }
+        )
         previous_close = close
     return rows
 
@@ -1006,12 +1693,69 @@ def fetch_report_publish_dates(code: str) -> dict[str, str]:
         publish_date = item.get("PUBLISHDATEDesc")
         if not publish_date:
             continue
-        match = re.search(r"(20\d{2})年第([1-4])季度报告", title)
-        if not match:
+        report_date = regular_report_date(title)
+        if not report_date:
             continue
-        quarter_end = {"1": "03-31", "2": "06-30", "3": "09-30", "4": "12-31"}[match.group(2)]
-        dates[f"{match.group(1)}-{quarter_end}"] = publish_date
+        dates[report_date] = publish_date
     return dates
+
+
+def regular_report_date(title: str) -> str | None:
+    year_pattern = r"(20\d{2}|[〇零○0一二三四五六七八九]{4})"
+    quarter = re.search(
+        rf"{year_pattern}年(?:度)?第([1-4一二三四])季度报告",
+        title or "",
+    )
+    if quarter:
+        year = _regular_report_year(quarter.group(1))
+        quarter_end = {
+            "1": "03-31",
+            "2": "06-30",
+            "3": "09-30",
+            "4": "12-31",
+            "一": "03-31",
+            "二": "06-30",
+            "三": "09-30",
+            "四": "12-31",
+        }[quarter.group(2)]
+        return f"{year}-{quarter_end}" if year else None
+    half_year = re.search(
+        rf"{year_pattern}年(?:度)?(?:半年度|中期)报告",
+        title or "",
+    )
+    if half_year:
+        year = _regular_report_year(half_year.group(1))
+        return f"{year}-06-30" if year else None
+    annual = re.search(
+        rf"{year_pattern}年(?:年度报告|度报告|年报)",
+        title or "",
+    )
+    if annual:
+        year = _regular_report_year(annual.group(1))
+        return f"{year}-12-31" if year else None
+    return None
+
+
+def _regular_report_year(value: str) -> str | None:
+    if re.fullmatch(r"20\d{2}", value):
+        return value
+    digits = {
+        "〇": "0",
+        "零": "0",
+        "○": "0",
+        "0": "0",
+        "一": "1",
+        "二": "2",
+        "三": "3",
+        "四": "4",
+        "五": "5",
+        "六": "6",
+        "七": "7",
+        "八": "8",
+        "九": "9",
+    }
+    normalized = "".join(digits.get(char, "") for char in value)
+    return normalized if re.fullmatch(r"20\d{2}", normalized) else None
 
 
 def fetch_latest_regular_report(code: str) -> dict[str, str] | None:
@@ -1090,22 +1834,6 @@ def format_purchase_amount(amount: float | None) -> str:
     if amount.is_integer():
         return f"{int(amount)}元"
     return f"{amount:g}元"
-
-
-def yahoo_daily(symbol: str, range_: str = "2y") -> pd.DataFrame:
-    response = _get(
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-        params={"range": range_, "interval": "1d"},
-    ).json()
-    result = response["chart"]["result"][0]
-    timestamps = result["timestamp"]
-    closes = result["indicators"]["quote"][0]["close"]
-    return pd.DataFrame(
-        {
-            "date": [datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat() for ts in timestamps],
-            "close": closes,
-        }
-    ).dropna()
 
 
 def yahoo_daily_close_marks(symbol: str, begin: str = "20240101", end: str = "20500101") -> list[dict[str, Any]]:

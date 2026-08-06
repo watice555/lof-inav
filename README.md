@@ -55,13 +55,21 @@ print(Counter(r["market_category"] for r in rows if r["included_in_site"] == "ye
 
 ## 快速开始
 
-本项目是普通 Python 项目，主要在 Windows 下使用。普通用户建议直接双击 [`quick_start.bat`](quick_start.bat)。它会自动创建 `.venv`、安装依赖、在本地数据库不存在时执行快速构建，然后启动网站并打开浏览器。
+本项目是普通 Python 项目。Windows 用户可以直接双击 [`quick_start.bat`](quick_start.bat)，macOS 用户可以直接双击 [`start.command`](start.command)。启动脚本会自动创建 `.venv`、安装依赖，并检查本地数据库的 schema、配置指纹和构建完成状态；数据库缺失、不完整或与当前配置不兼容时，会先执行快速重建，再启动网站并打开浏览器。
 
 如果已经有本地数据库，但想重新抓取当前估值数据，可以在 PowerShell 中运行：
 
 ```powershell
 .\quick_start.bat --rebuild
 ```
+
+macOS 中对应的命令是：
+
+```bash
+./start.command --rebuild
+```
+
+macOS 只提供这一个启动入口，不再区分快速启动和仅启动。首次双击如果被系统阻止，可以在 Finder 中右键 `start.command`，选择“打开”；也可以先在终端运行 `chmod +x start.command stop.command`。
 
 网站地址：
 
@@ -85,7 +93,7 @@ python build.py --current-only
 python build.py
 ```
 
-`build.py` 默认生成最近 30 条净值回测。完整构建会刷新历史日线价格和回测用标记价格；基金数量较多，首次完整构建仍然会比较慢，并且需要访问东方财富、新浪财经和 Yahoo Finance。
+`build.py` 默认生成最近 30 条净值回测。完整构建会按这 30 条回测对应的净值日期精确补齐历史日线和回测标记价格，不会无界下载全部历史；基金数量较多，首次完整构建仍然会比较慢，并且需要访问东方财富、新浪财经、Yahoo Finance、中证指数和恒生指数的公开接口。
 
 开发或手工运行时，也可以自己创建虚拟环境并启动服务：
 
@@ -98,9 +106,17 @@ python serve.py
 
 依赖和数据都准备好后，也可以运行 [`start.bat`](start.bat)，它会优先使用 `.venv` 里的 Python，只启动 `serve.py` 并打开浏览器，不会安装依赖或执行构建。
 
+macOS 停止服务时，双击 [`stop.command`](stop.command)，或在终端运行：
+
+```bash
+./stop.command
+```
+
+停止脚本会核对 PID、启动命令和实际监听端口，只终止当前项目启动的服务；如果默认端口属于其他程序，会保留该程序并给出提示。
+
 ## 发布 Windows exe
 
-可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会优先监听 `http://127.0.0.1:8001`，端口冲突时自动选择后续可用端口（最多向上查找 100 个端口），并在监听成功后打开浏览器。
+可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会优先监听 `http://127.0.0.1:8001`，端口冲突时自动选择后续可用端口，并在监听成功后打开浏览器。
 
 在开发机上运行：
 
@@ -150,6 +166,14 @@ python build.py
 .\quick_start.bat --rebuild
 ```
 
+macOS 一键启动、重建或停止：
+
+```bash
+./start.command
+./start.command --rebuild
+./stop.command
+```
+
 只刷新当前估值数据，不拉历史日线、不跑回测：
 
 ```powershell
@@ -188,7 +212,7 @@ python import_fund.py 160924 --current-only
 python scripts\validate_config.py
 ```
 
-只刷新最新公告链接：
+刷新最新定期报告、公告链接和受影响持仓：
 
 ```powershell
 python refresh_announcements.py
@@ -207,7 +231,9 @@ python refresh_announcements.py
 - 东方财富行情接口 `push2` / `push2his`：场内 LOF、A 股/港股/美股代理、指数、汇率等实时行情和历史日线；部分指数实时行情会走 `stock/get` 或 `trends2/get`。
 - 东方财富期货接口 `futsseapi.eastmoney.com`：部分期货代理的实时行情，例如沪银主连。
 - 新浪财经 `hq.sinajs.cn`、`quotes.sina.cn`、`stock2.finance.sina.com.cn`：A 股实时和日线 fallback、港股指数/美股/外汇/全球期货实时 fallback，以及部分期货日线。
-- Yahoo Finance chart API：配置在 `YAHOO_PRICE_SYMBOLS` 中的美股、港股、ETF、指数和商品代理的实时/日线；配置在 `US_EQUITY_CLOSE_MARKS` 中的 WTI、Brent、黄金、白银等回测收盘标记价。
+- 中证指数官网盘中表现与历史行情导出接口：中证主题指数和行业指数的官方实时点位与历史收盘价。
+- 恒生指数官网图表与表现接口：恒生中国（香港上市）30、恒生港股通、恒生综合中型股、恒生综合小型股和恒生科技等专用港股指数的历史走势与最新锚定价格。
+- Yahoo Finance chart API：配置在 `YAHOO_PRICE_SYMBOLS` 中的美股、港股、ETF、全球指数和商品代理的实时/日线；配置在 `US_EQUITY_CLOSE_MARKS` 中的 WTI、Brent、黄金、白银等回测收盘标记价。
 
 人工维护或离线核验的数据源：
 
@@ -222,8 +248,8 @@ python refresh_announcements.py
 - `navs`：历史单位净值、分红和净值涨跌。
 - `holdings`：每期持仓、人工穿透资产或代理资产。
 - `quotes`：实时行情。
-- `daily_prices`：历史日线。
-- `mark_prices`：用于回测的 Yahoo 日线收盘标记价。
+- `daily_prices`：历史日线，并记录数据源和复权/缩放口径等 provenance。
+- `mark_prices`：用于回测的独立日线收盘标记价。
 - `backtests`：相邻净值日回测结果。
 - `fund_announcements`：最新公告入口。
 - `fund_purchase_limits`：申购、赎回状态和限额。
@@ -270,14 +296,16 @@ python refresh_announcements.py
 error_pct = estimated_nav / actual_nav - 1
 ```
 
-其中 `actual_nav` 已包含当日每份现金分红。`covered_weight` 是当行回测实际参与计算的持仓权重合计；缺少日线、汇率或无法取价的资产不会计入覆盖仓位，也不会贡献收益。
+其中 `actual_nav` 已包含当日每份现金分红。`modeled_weight` 是该行规则明确建模的资产权重，`covered_weight` 是其中实际成功取价并参与计算的权重，`priced_ratio = covered_weight / modeled_weight`。缺少日线、汇率或无法取价的资产不会计入 `covered_weight`，也不会贡献收益。
+
+低股票仓位或低风险资产占比较高的基金，`modeled_weight` 本来就可能较低，这只作为柔和的上下文提示，不会单独判为回测失败。只有已建模资产中的实际取价比例 `priced_ratio` 低于 60% 时，回测行才标记为 `low_coverage`，提醒谨慎解读。
 
 列表页的回测摘要使用最近最多 30 条回测记录：
 
 - `回测 MAE`：`abs(error_pct)` 的平均值，即平均绝对误差。
 - `MAE/波动`：`回测 MAE / 净值日收益率标准差`，用于把误差放到基金自身波动里比较。
-- `覆盖仓位`：日内估值里当前最新持仓/代理资产有实时行情并参与计算的权重合计。
-- `最大误差`、`最新误差`、`平均覆盖仓位`：用于判断代理规则是否稳定。
+- `覆盖仓位`：日内估值里当前最新持仓/代理资产有实时行情并参与计算的权重合计；详情同时展示建模权重和取价比例。
+- `最大误差`、`最新误差`、`平均覆盖仓位`、`平均取价比例`：用于判断代理规则和行情覆盖是否稳定。
 
 单只基金详情页展示最近 30 条回测明细，包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
 
@@ -335,16 +363,17 @@ error_pct = estimated_nav / actual_nav - 1
 - 列表排序：点击当前展示的可排序表头，可在升序、降序、默认顺序之间切换；支持基金、类型、公告日期、申购限额、净值、价格、估值、折溢价、覆盖仓位和回测指标排序。其中基金列实际按基金代码大小排序。
 - 公告入口：打开 `公告` 列后，公告列链接到东方财富公告页，并按公告 ID 拼出 PDF 入口。
 - 持仓/代理详情：点击基金行后展示最新一期持仓或代理资产；打开 `自动滚动` 时会自动滚到详情区域。详情包括资产名称、`secid`、权重、最新价格、价格时间和来源标记。
-- 最近回测详情：展示最近回测行，包括实际净值、场内收盘价、历史折溢价、估算净值、误差、覆盖仓位和数据质量提示。
+- 最近回测详情：展示最近回测行，包括实际净值、场内收盘价、历史折溢价、估算净值、误差、取价比例/建模权重和数据质量提示。
 - 导出口径：CSV 和 PNG 都使用当前筛选、排序后的可见基金，并跟随当前表头展示列；PNG 会包含当前筛选摘要、刷新时间和免责声明。
 - 自动刷新：页面加载后立即拉取一次数据，之后每 60 秒自动刷新列表行情和状态。
 
 服务端刷新策略：
 
-- 净值缓存为空时同步补齐；之后 `/api/funds` 最多每 15 分钟触发一次后台净值刷新。网页自动刷新只更新当前估值所需数据；需要更新历史日线和回测时运行 `python build.py`。
+- 净值缓存为空时同步补齐；之后 `/api/funds` 通常最多每 15 分钟触发一次后台净值刷新，数据未变化时退避到 1 小时，非交易日退避到 6 小时。
 - 实时行情缓存为空时同步补齐；之后最多每 60 秒后台刷新一次。
 - 申购限额缓存为空时同步补齐；之后最多每 1 小时后台刷新一次。
-- 列表接口只刷新当前基金场内价格、汇率和最新持仓/代理标的行情；历史持仓标的日线由 `python build.py` 或单只导入增量更新。
+- 定期报告和持仓每日自动检查一次；失败时 1 小时后重试。新公告导致持仓变化时，只重算受影响基金的行情和回测。
+- 列表接口只刷新当前基金场内价格、汇率和最新持仓/代理标的行情；历史持仓标的日线由 `python build.py`、单只导入或受影响报告增量更新。`/api/refresh-status` 仅返回轻量刷新状态，不触发完整列表计算。
 
 ## 当前限制
 
@@ -361,10 +390,10 @@ quick_start.bat  普通用户一键启动：建环境、装依赖、快速构建
 start.bat        已有环境下启动本地网站
 app/
   build.py       数据导入、行情刷新、日线刷新、回测调度
-  config.py      配置加载、汇率映射、Yahoo 标记价映射
+  config.py      配置加载、汇率映射、专用指数和 Yahoo 标记价映射
   db.py          SQLite schema 和元数据读写
   server.py      静态服务与 JSON API
-  sources.py     东方财富、新浪财经、Yahoo 数据源请求和解析
+  sources.py     东方财富、新浪、中证、恒生、Yahoo 数据源请求和解析
   valuation.py   日内估值、汇率折算、回测
 config/
   fund_rules.json
@@ -386,4 +415,4 @@ public/
 
 感谢 OpenAI Codex，让我能够把一些原本停留在想法和表格里的东西，逐步落实成可以运行、验证和迭代的代码。
 
-感谢东方财富、新浪财经、Yahoo Finance 等公开数据源。本项目的数据抓取、行情补齐和回测验证都离不开这些公开信息。
+感谢东方财富、新浪财经、中证指数、恒生指数和 Yahoo Finance 等公开数据源。本项目的数据抓取、行情补齐和回测验证都离不开这些公开信息。

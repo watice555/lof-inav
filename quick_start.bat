@@ -26,13 +26,16 @@ if "%~1"=="--rebuild" (
     echo Rebuilding current valuation data...
     "%VENV_PY%" build.py --current-only || goto failed
 ) else (
-    if not exist "%DB_PATH%" (
-        echo First run: building current valuation data...
+    "%VENV_PY%" scripts\check_database.py >nul 2>nul
+    if errorlevel 1 (
+        echo Local database is missing, incomplete, or incompatible. Building current valuation data...
         "%VENV_PY%" build.py --current-only || goto failed
     ) else (
-        echo Local database already exists. Skipping initial build.
+        echo Local database is ready. Skipping initial build.
     )
 )
+
+"%VENV_PY%" scripts\check_database.py || goto failed
 
 set "LOF_INAV_OPEN_BROWSER=1"
 echo Starting LOF iNAV...

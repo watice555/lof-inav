@@ -11,7 +11,6 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 
 $projectRootPath = (Resolve-Path -LiteralPath $ProjectRoot).Path.TrimEnd("\")
 $servePath = Join-Path $projectRootPath "serve.py"
-$startPath = Join-Path $projectRootPath "start.bat"
 $venvPythonPath = Join-Path $projectRootPath ".venv\Scripts\python.exe"
 $expectedExePaths = @(
     (Join-Path $projectRootPath "LOF_iNAV.exe"),
@@ -24,7 +23,6 @@ $pidPaths = @(
     (Join-Path $projectRootPath "dist\data\lof_inav.pid")
 ) | Select-Object -Unique
 $servePattern = [regex]::Escape($servePath)
-$startPattern = [regex]::Escape($startPath)
 $checkedPorts = @($Port)
 
 function Get-ListenerPids {
@@ -107,16 +105,7 @@ if (-not $targets) {
             Remove-Item -LiteralPath $target.PidPath -Force
         }
     }
-
     Start-Sleep -Milliseconds 500
-
-    foreach ($parentId in ($targets | ForEach-Object { $_.Process.ParentProcessId } | Select-Object -Unique)) {
-        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId"
-        if ($parent -and $parent.CommandLine -match $startPattern) {
-            Stop-Process -Id $parent.ProcessId -Force
-        }
-    }
-
     Write-Host "LOF iNAV server stopped."
 }
 

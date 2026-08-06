@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,11 @@ def validate_fund(code: str, item: Any) -> list[str]:
         return [f"{prefix}: fund config must be an object"]
 
     exchange_market = item.get("exchange_market")
-    if not isinstance(exchange_market, int):
+    if (
+        not isinstance(exchange_market, int)
+        or isinstance(exchange_market, bool)
+        or exchange_market < 0
+    ):
         errors.append(f"{prefix}.exchange_market: required integer")
 
     fund_type = item.get("type") or item.get("fund_type")
@@ -113,8 +118,33 @@ def validate_fund(code: str, item: Any) -> list[str]:
     if not isinstance(manual_holdings, list):
         errors.append(f"{prefix}.manual_holdings: must be a list")
     else:
+        report_dates = []
         for index, period in enumerate(manual_holdings):
             errors.extend(validate_manual_period(f"{prefix}.manual_holdings[{index}]", period))
+            if isinstance(period, dict) and isinstance(period.get("report_date"), str):
+                report_dates.append(period["report_date"])
+        duplicates = sorted(
+            report_date
+            for report_date in set(report_dates)
+            if report_dates.count(report_date) > 1
+        )
+        if duplicates:
+            errors.append(
+                f"{prefix}.manual_holdings: duplicate report dates {', '.join(duplicates)}"
+            )
+    if mode == "replace" and not manual_holdings:
+        errors.append(f"{prefix}.manual_holdings: replace mode requires manual holdings")
+    if mode == "proxy_only" and not proxy_secids:
+        errors.append(f"{prefix}.proxy_secids: proxy_only mode requires at least one secid")
+    if mode == "proxy_then_manual_replace":
+        if not proxy_secids:
+            errors.append(
+                f"{prefix}.proxy_secids: proxy_then_manual_replace mode requires at least one secid"
+            )
+        if not manual_holdings:
+            errors.append(
+                f"{prefix}.manual_holdings: proxy_then_manual_replace mode requires manual holdings"
+            )
     return errors
 
 
@@ -126,8 +156,20 @@ def validate_manual_period(prefix: str, period: Any) -> list[str]:
     if not isinstance(report_date, str) or not REPORT_DATE_PATTERN.fullmatch(report_date):
         errors.append(f"{prefix}.report_date: must be a quarter-end date")
     publish_date = period.get("publish_date")
-    if publish_date is not None and not isinstance(publish_date, str):
-        errors.append(f"{prefix}.publish_date: must be a string when present")
+    if publish_date is not None:
+        if not isinstance(publish_date, str):
+            errors.append(f"{prefix}.publish_date: must be an ISO date when present")
+        else:
+            try:
+                publish_day = date.fromisoformat(publish_date)
+            except ValueError:
+                errors.append(f"{prefix}.publish_date: must be an ISO date when present")
+            else:
+                if isinstance(report_date, str) and REPORT_DATE_PATTERN.fullmatch(report_date):
+                    if publish_day < date.fromisoformat(report_date):
+                        errors.append(
+                            f"{prefix}.publish_date: must not be earlier than report_date"
+                        )
     holdings = period.get("holdings")
     if not isinstance(holdings, list) or not holdings:
         errors.append(f"{prefix}.holdings: must be a non-empty list")

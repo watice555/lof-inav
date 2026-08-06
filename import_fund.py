@@ -3,13 +3,16 @@ from __future__ import annotations
 import argparse
 
 from app.build import (
+    current_realtime_secids,
+    full_backtest_price_targets_for_fund,
     import_fund_data,
-    refresh_daily_prices,
-    refresh_mark_prices,
+    refresh_daily_prices_for_targets,
+    refresh_current_valuation_base_prices,
+    refresh_mark_prices_for_targets,
     refresh_purchase_limits,
     refresh_quotes,
 )
-from app.config import FUNDS, FX_MIDPOINT_SECIDS
+from app.config import FUNDS
 from app.db import connect, init_db, set_meta
 from app.sources import utc_now
 from app.valuation import backtest_summary, run_backtest
@@ -35,17 +38,18 @@ def main() -> None:
 
     init_db()
     with connect() as con:
-        secids = import_fund_data(con, args.code)
-        secids.update(FX_MIDPOINT_SECIDS.values())
-        refresh_quotes(con, sorted(secids))
+        import_fund_data(con, args.code)
+        refresh_quotes(con, current_realtime_secids(con, [args.code]))
         refresh_purchase_limits(con)
         if not args.current_only:
-            refresh_daily_prices(con, sorted(secids))
-            refresh_mark_prices(con, sorted(secids))
-            run_backtest(con, args.code, days=args.days)
+            targets = full_backtest_price_targets_for_fund(con, args.code, args.days)
+            refresh_daily_prices_for_targets(con, targets)
+            refresh_mark_prices_for_targets(con, targets)
+            if not run_backtest(con, args.code, days=args.days):
+                raise RuntimeError(f"backtest produced no rows for {args.code}")
+        else:
+            refresh_current_valuation_base_prices(con, [args.code])
         set_meta(con, f"last_import_fund_{args.code}_at", utc_now())
-        set_meta(con, "last_navs_refresh_at", utc_now())
-        set_meta(con, "last_navs_refresh_success_at", utc_now())
 
         fund = con.execute("select code, name, note from funds where code = ?", (args.code,)).fetchone()
         summary = None if args.current_only else backtest_summary(con, args.code)

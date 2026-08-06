@@ -1,14 +1,11 @@
 import logging
 import os
-import sqlite3
 import sys
-import threading
-import webbrowser
 from pathlib import Path
 
 from app.build import build_all
-from app.config import DB_PATH
-from app.server import URL, main
+from app.db import connect, database_is_ready, init_db
+from app.server import main
 
 
 def working_dir() -> Path:
@@ -17,25 +14,18 @@ def working_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def open_browser() -> None:
-    webbrowser.open(URL)
-
-
-def database_has_funds() -> bool:
-    path = Path(DB_PATH)
-    if not path.exists():
-        return False
+def database_ready() -> bool:
     try:
-        with sqlite3.connect(path) as con:
-            row = con.execute("select count(*) from funds").fetchone()
-    except sqlite3.Error:
+        init_db()
+        with connect() as con:
+            return database_is_ready(con)
+    except Exception:
         return False
-    return bool(row and row[0])
 
 
-def ensure_initial_data() -> None:
-    if database_has_funds():
-        return
+def ensure_initial_data() -> bool:
+    if database_ready():
+        return True
 
     root_logger = logging.getLogger()
     previous_level = root_logger.level
@@ -50,8 +40,7 @@ def ensure_initial_data() -> None:
         result = build_all(update_backtests=False)
     except Exception as exc:
         print(f"Initial data build failed: {type(exc).__name__}: {exc}")
-        print("The server will still start and retry lightweight refreshes from the web page.")
-        return
+        return False
     finally:
         root_logger.removeHandler(build_log_handler)
         root_logger.setLevel(previous_level)
@@ -59,11 +48,16 @@ def ensure_initial_data() -> None:
         "Initial data build completed: "
         f"imported={len(result['imported'])} failed={len(result['import_failed'])}"
     )
+    if result["import_failed"]:
+        return False
+    return database_ready()
 
 
 if __name__ == "__main__":
     os.chdir(working_dir())
-    ensure_initial_data()
-    if os.environ.get("LOF_INAV_NO_BROWSER") != "1":
-        threading.Timer(1.8, open_browser).start()
+    if not ensure_initial_data():
+        raise SystemExit(
+            "Initial data is incomplete. Check the errors above and run the application again."
+        )
+    os.environ["LOF_INAV_OPEN_BROWSER"] = "1"
     main()

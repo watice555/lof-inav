@@ -19,6 +19,20 @@
               "source": "index_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "二季报披露为 ETF 联接基金，目标 ETF 跟踪恒生中国(香港上市)30指数，因此用指数代理目标 ETF 敞口。",
+          "holdings": [
+            {
+              "secid": "124.HSFML25",
+              "symbol": "HSFML25",
+              "name": "恒生中国(香港上市)30指数",
+              "weight": 0.946,
+              "source": "index_proxy"
+            }
+          ]
         }
       ]
     },
@@ -304,6 +318,62 @@
               "source": "announcement_fund_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露前十名基金投资明细；iShares MSCI India 与 Amundi Swap 映射 INDA，Core SENSEX 映射 INDY。",
+          "holdings": [
+            {
+              "secid": "107.INDA",
+              "symbol": "INDA",
+              "name": "MSCI India ETF 等效代理",
+              "weight": 0.4801,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.EPI",
+              "symbol": "EPI",
+              "name": "WisdomTree India Earnings Fund",
+              "weight": 0.1662,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.SMIN",
+              "symbol": "SMIN",
+              "name": "iShares MSCI India Small-Cap ETF",
+              "weight": 0.0909,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.INDY",
+              "symbol": "INDY",
+              "name": "India 50/SENSEX ETF 等效代理",
+              "weight": 0.0716,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.NFTY",
+              "symbol": "NFTY",
+              "name": "Nifty 50 ETF 等效代理",
+              "weight": 0.0425,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.INCO",
+              "symbol": "INCO",
+              "name": "Columbia India Consumer ETF",
+              "weight": 0.0325,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.GLIN",
+              "symbol": "GLIN",
+              "name": "VanEck India Growth Leaders ETF",
+              "weight": 0.0099,
+              "source": "announcement_fund_proxy"
+            }
+          ]
         }
       ]
     },
@@ -365,6 +435,20 @@
               "symbol": "IXC",
               "name": "iShares Global Energy ETF",
               "weight": 0.9399,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.2 股票及存托凭证合计占基金资产净值 95.43%，用全球能源 ETF IXC 代理。",
+          "holdings": [
+            {
+              "secid": "107.IXC",
+              "symbol": "IXC",
+              "name": "iShares Global Energy ETF",
+              "weight": 0.9543,
               "source": "announcement_index_proxy"
             }
           ]
@@ -444,6 +528,20 @@
               "symbol": "XAU",
               "name": "黄金现货等效代理",
               "weight": 0.9494,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 6 只实物黄金 ETF，合计占基金资产净值 96.86%，映射为黄金现货等效敞口。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.9686,
               "source": "lookthrough_commodity"
             }
           ]
@@ -553,6 +651,27 @@
               "source": "announcement_stock"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 6 只原油 ETF/ETC，WTI 合计 56.19%、Brent 合计 36.94%；本期无港股能源股。",
+          "holdings": [
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.5619,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.3694,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -614,6 +733,20 @@
               "symbol": "XAU",
               "name": "黄金现货等效代理",
               "weight": 0.9908,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 8 只黄金 ETF；普通黄金 ETF 按 1x 合计 89.75%，ProShares Ultra Gold 5.83% 按 2x 折算，黄金等效敞口约 101.41%。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 1.0141,
               "source": "lookthrough_commodity"
             }
           ]
@@ -741,6 +874,62 @@
               "source": "lookthrough_commodity"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 XOP 18.84%、VDE 17.50%、IYE 16.99%、IXC 16.80%、XLE 16.20%、USO 5.02%、BNO 3.44%。USO/BNO 穿透为 WTI/Brent。",
+          "holdings": [
+            {
+              "secid": "107.XOP",
+              "symbol": "XOP",
+              "name": "SPDR S&P Oil & Gas Exploration & Production ETF",
+              "weight": 0.1884,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.VDE",
+              "symbol": "VDE",
+              "name": "Vanguard Energy ETF",
+              "weight": 0.175,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.IYE",
+              "symbol": "IYE",
+              "name": "iShares U.S. Energy ETF",
+              "weight": 0.1699,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.IXC",
+              "symbol": "IXC",
+              "name": "iShares Global Energy ETF",
+              "weight": 0.168,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.XLE",
+              "symbol": "XLE",
+              "name": "Energy Select Sector SPDR Fund",
+              "weight": 0.162,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.0502,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.0344,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -771,6 +960,20 @@
           "report_date": "2026-03-31",
           "publish_date": "2026-04-21",
           "rationale": "2026Q1 原始季报 5.9.1 披露 AG2606、AG2608、AG2612、AG2610 沪白银期货持仓，合约市值合计约 143.87 亿元；5.4 披露固定收益投资 47.09 亿元占基金资产净值 32.77%，倒算基金净值约 143.72 亿元，白银期货名义敞口约 100%。债券和现金主要作为保证金/流动性管理，估值敞口按沪银主连处理。",
+          "holdings": [
+            {
+              "secid": "113.agm",
+              "symbol": "agm",
+              "name": "沪银主连",
+              "weight": 1.0,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9.1 披露 AG2610、AG2608、AG2612 沪白银期货持仓，合约市值合计约 100.62 亿元；债券和现金主要作为保证金/流动性管理，估值敞口按沪银主连处理。",
           "holdings": [
             {
               "secid": "113.agm",
@@ -835,6 +1038,27 @@
               "source": "lookthrough_commodity"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 WisdomTree Brent 18.79%、Brent Oil 18.67%、WisdomTree WTI 18.66%、USO 18.41%、UBS CMCI Oil 8.47%、Simplex WTI 5.62%、NEXT FUNDS 原油 5.42%。按标的穿透为 WTI/Brent。",
+          "holdings": [
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.5658,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.3746,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -876,6 +1100,20 @@
               "source": "announcement_index_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "指数复制型，业绩基准为中证大宗商品股票指数收益率*95%+商业银行活期存款利率(税后)*5%；2026Q2 股票占基金资产净值 94.30%（行业 A3.45+B20.81+C70.04）。",
+          "holdings": [
+            {
+              "secid": "1.000979",
+              "symbol": "000979",
+              "name": "中证大宗商品股票指数",
+              "weight": 0.943,
+              "source": "announcement_index_proxy"
+            }
+          ]
         }
       ]
     },
@@ -899,6 +1137,20 @@
               "symbol": "XLE",
               "name": "Energy Select Sector SPDR Fund",
               "weight": 0.9158,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露权益投资占总资产 87.70%；5.2 披露美国股票占基金资产净值 91.83%；5.3 行业 100% 能源。",
+          "holdings": [
+            {
+              "secid": "107.XLE",
+              "symbol": "XLE",
+              "name": "Energy Select Sector SPDR Fund",
+              "weight": 0.9183,
               "source": "announcement_index_proxy"
             }
           ]
@@ -935,6 +1187,20 @@
               "symbol": "HSSI",
               "name": "恒生综合小型股指数",
               "weight": 0.9332,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露权益投资占总资产 91.72%；5.2 披露中国香港股票及存托凭证占基金资产净值 92.97%。",
+          "holdings": [
+            {
+              "secid": "124.HSSI",
+              "symbol": "HSSI",
+              "name": "恒生综合小型股指数",
+              "weight": 0.9297,
               "source": "announcement_index_proxy"
             }
           ]
@@ -1088,6 +1354,20 @@
               "source": "announcement_fund_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露基金投资占总资产 83.53%；5.8 披露黄金 ETF/ETC 1x 合计 86.79%，DB Gold Double Long 4.10% 按 2x 折算为 8.20%，黄金等效敞口约 94.99%；无 WTI/白银。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.9499,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -1111,6 +1391,20 @@
               "symbol": "XAU",
               "name": "黄金现货等效代理",
               "weight": 0.9349,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 5 只黄金 ETF：abrdn 19.86%、SPDR 19.83%、MiniShares 19.78%、iShares 19.65%、UBS 15.71%，合计 94.83%。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.9483,
               "source": "lookthrough_commodity"
             }
           ]
@@ -1281,6 +1575,83 @@
               "source": "announcement_etf_holding"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露前十名基金投资明细：ARKK 18.48%、ARKG 16.93%、ARKQ 10.15%、AIQ 6.32%、BOTZ 5.05%、ARKX 5.00%、XLK 4.67%、SMH 4.39%、SOXX 3.33%、QQQ 3.27%，合计 77.59%。",
+          "holdings": [
+            {
+              "secid": "107.ARKK",
+              "symbol": "ARKK",
+              "name": "ARK Innovation ETF",
+              "weight": 0.1848,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.ARKG",
+              "symbol": "ARKG",
+              "name": "ARK Genomic Revolution ETF",
+              "weight": 0.1693,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.ARKQ",
+              "symbol": "ARKQ",
+              "name": "ARK Autonomous Technology & Robotics ETF",
+              "weight": 0.1015,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.AIQ",
+              "symbol": "AIQ",
+              "name": "Global X Artificial Intelligence & Technology ETF",
+              "weight": 0.0632,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.BOTZ",
+              "symbol": "BOTZ",
+              "name": "Global X Robotics & Artificial Intelligence ETF",
+              "weight": 0.0505,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.ARKX",
+              "symbol": "ARKX",
+              "name": "ARK Space & Defense Innovation ETF",
+              "weight": 0.05,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.XLK",
+              "symbol": "XLK",
+              "name": "Technology Select Sector SPDR Fund",
+              "weight": 0.0467,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.SMH",
+              "symbol": "SMH",
+              "name": "VanEck Semiconductor ETF",
+              "weight": 0.0439,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.SOXX",
+              "symbol": "SOXX",
+              "name": "iShares Semiconductor ETF",
+              "weight": 0.0333,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.QQQ",
+              "symbol": "QQQ",
+              "name": "Invesco QQQ Trust",
+              "weight": 0.0327,
+              "source": "announcement_etf_holding"
+            }
+          ]
         }
       ]
     },
@@ -1307,6 +1678,20 @@
               "source": "announcement_index_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露权益投资占总资产 92.55%；5.2 披露美国股票占基金资产净值 94.63%；5.3 行业均为非日常生活消费品。",
+          "holdings": [
+            {
+              "secid": "107.XLY",
+              "symbol": "XLY",
+              "name": "Consumer Discretionary Select Sector SPDR Fund",
+              "weight": 0.9463,
+              "source": "announcement_index_proxy"
+            }
+          ]
         }
       ]
     },
@@ -1330,6 +1715,20 @@
               "symbol": "AGG",
               "name": "iShares Core U.S. Aggregate Bond ETF",
               "weight": 0.9192,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露固定收益投资占总资产 97.03%；业绩基准为 90% Bloomberg/Barclays US Aggregate Bond Index + 10% 税后活期存款，使用 AGG 代理债券敞口。",
+          "holdings": [
+            {
+              "secid": "107.AGG",
+              "symbol": "AGG",
+              "name": "iShares Core U.S. Aggregate Bond ETF",
+              "weight": 0.9703,
               "source": "announcement_index_proxy"
             }
           ]
@@ -1377,6 +1776,27 @@
               "source": "announcement_index_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报业绩比较基准改为费城半导体 70% + 中证芯片产业 20% + 人民币活期存款 10%；5.1 披露基金投资占总资产 92.45%。估值按权益基准比例拆为费城半导体 70%、中证芯片产业 20%，现金部分不做代理。",
+          "holdings": [
+            {
+              "secid": "100.SOX",
+              "symbol": "SOX",
+              "name": "费城半导体指数代理",
+              "weight": 0.7,
+              "source": "announcement_index_proxy"
+            },
+            {
+              "secid": "0.159995",
+              "symbol": "159995",
+              "name": "中证芯片产业指数代理",
+              "weight": 0.2,
+              "source": "announcement_index_proxy"
+            }
+          ]
         }
       ]
     },
@@ -1400,6 +1820,20 @@
               "symbol": "VNQ",
               "name": "Vanguard Real Estate ETF",
               "weight": 0.9006,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露房地产信托凭证占总资产 81.66%、基金投资 2.51%；5.2 披露美国权益占基金资产净值 84.08%；5.3 REIT 行业合计 84.08%。",
+          "holdings": [
+            {
+              "secid": "107.VNQ",
+              "symbol": "VNQ",
+              "name": "Vanguard Real Estate ETF",
+              "weight": 0.8408,
               "source": "announcement_index_proxy"
             }
           ]
@@ -1651,6 +2085,230 @@
               "source": "index_constituent_basket"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露权益投资占总资产 90.46%；5.2 披露中国香港 66.05%、美国 26.23%，合计占基金资产净值 92.28%。沿用 H11136 官方成分篮子，按披露的港股/美股占比在 2026Q1 篮子基础上缩放归一。",
+          "holdings": [
+            {
+              "secid": "116.09988",
+              "symbol": "09988",
+              "name": "阿里巴巴-W",
+              "weight": 0.09,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00700",
+              "symbol": "00700",
+              "name": "腾讯控股",
+              "weight": 0.0848,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.PDD",
+              "symbol": "PDD",
+              "name": "PDD Holdings Inc.",
+              "weight": 0.0759,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.03690",
+              "symbol": "03690",
+              "name": "美团-W",
+              "weight": 0.0643,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09999",
+              "symbol": "09999",
+              "name": "网易-S",
+              "weight": 0.0549,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09888",
+              "symbol": "09888",
+              "name": "百度集团-SW",
+              "weight": 0.0507,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.02423",
+              "symbol": "02423",
+              "name": "贝壳-W",
+              "weight": 0.049,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09618",
+              "symbol": "09618",
+              "name": "京东集团-SW",
+              "weight": 0.0444,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01024",
+              "symbol": "01024",
+              "name": "快手-W",
+              "weight": 0.0337,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09961",
+              "symbol": "09961",
+              "name": "携程集团-S",
+              "weight": 0.0336,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.06618",
+              "symbol": "06618",
+              "name": "京东健康",
+              "weight": 0.0334,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.YMM",
+              "symbol": "YMM",
+              "name": "Full Truck Alliance Co. Ltd.",
+              "weight": 0.0338,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.TAL",
+              "symbol": "TAL",
+              "name": "TAL Education Group",
+              "weight": 0.0297,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09626",
+              "symbol": "09626",
+              "name": "哔哩哔哩-W",
+              "weight": 0.0285,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.BZ",
+              "symbol": "BZ",
+              "name": "Kanzhun Ltd.",
+              "weight": 0.0274,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.TME",
+              "symbol": "TME",
+              "name": "Tencent Music Entertainment Group",
+              "weight": 0.022,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.VIPS",
+              "symbol": "VIPS",
+              "name": "Vipshop Holdings Ltd.",
+              "weight": 0.0219,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00241",
+              "symbol": "00241",
+              "name": "阿里健康",
+              "weight": 0.0191,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.03888",
+              "symbol": "03888",
+              "name": "金山软件",
+              "weight": 0.0177,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00780",
+              "symbol": "00780",
+              "name": "同程旅行",
+              "weight": 0.0163,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.02400",
+              "symbol": "02400",
+              "name": "心动公司",
+              "weight": 0.0124,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01797",
+              "symbol": "01797",
+              "name": "东方甄选",
+              "weight": 0.0096,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00772",
+              "symbol": "00772",
+              "name": "阅文集团",
+              "weight": 0.0092,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.06060",
+              "symbol": "06060",
+              "name": "众安在线",
+              "weight": 0.0091,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.JOYY",
+              "symbol": "JOYY",
+              "name": "JOYY Inc.",
+              "weight": 0.0092,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09899",
+              "symbol": "09899",
+              "name": "云音乐",
+              "weight": 0.0088,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.QFIN",
+              "symbol": "QFIN",
+              "name": "QFIN Holdings Inc.",
+              "weight": 0.0089,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01833",
+              "symbol": "01833",
+              "name": "平安好医生",
+              "weight": 0.0081,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.ATHM",
+              "symbol": "ATHM",
+              "name": "Autohome Inc.",
+              "weight": 0.007,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01060",
+              "symbol": "01060",
+              "name": "阿里影业",
+              "weight": 0.0046,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.WB",
+              "symbol": "WB",
+              "name": "Weibo Corp.",
+              "weight": 0.0043,
+              "source": "index_constituent_basket"
+            }
+          ]
         }
       ]
     },
@@ -1747,6 +2405,48 @@
               "source": "announcement_fund_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露黄金 ETF 合计 25.49%、广义商品 ETF（GSCI Dynamic/PDBC/BCD）合计 34.31%、农业 DBA 12.28%、WTI 9.36%、Brent 7.33%；无白银。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.2549,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "107.DBC",
+              "symbol": "DBC",
+              "name": "广义商品 ETF 等效代理",
+              "weight": 0.3431,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.DBA",
+              "symbol": "DBA",
+              "name": "Invesco DB Agriculture Fund",
+              "weight": 0.1228,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.0936,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.0733,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -1770,6 +2470,20 @@
               "symbol": "XBI",
               "name": "SPDR S&P Biotech ETF",
               "weight": 0.9511,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.1 披露权益投资占总资产 93.38%；5.2 披露美国股票占基金资产净值 94.71%；5.3 行业均为保健。",
+          "holdings": [
+            {
+              "secid": "107.XBI",
+              "symbol": "XBI",
+              "name": "SPDR S&P Biotech ETF",
+              "weight": 0.9471,
               "source": "announcement_index_proxy"
             }
           ]
@@ -1964,6 +2678,27 @@
               "symbol": "B00Y",
               "name": "Brent原油等效代理",
               "weight": 0.3277,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 WisdomTree WTI 19.75%、Invesco DB Oil 18.20%、USO 17.05%、Samsung GSCI 7.81%（WTI 侧 62.81%），Brent 侧 18.57%+12.57%=31.14%。按标的穿透为 WTI/Brent。",
+          "holdings": [
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.6281,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.3114,
               "source": "lookthrough_commodity"
             }
           ]
@@ -2693,6 +3428,20 @@
               "source": "historical_proxy_extension"
             }
           ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.2 披露目标 ETF 汇添富中证500 占基金资产净值 92.25%，用中证500指数代理。",
+          "holdings": [
+            {
+              "secid": "1.000905",
+              "symbol": "000905",
+              "name": "中证500指数",
+              "weight": 0.9225,
+              "source": "index_proxy"
+            }
+          ]
         }
       ]
     },
@@ -2797,6 +3546,20 @@
               "name": "中证500指数",
               "weight": 0.9611,
               "source": "historical_proxy_extension"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.2 披露目标 ETF 汇添富中证500 占基金资产净值 92.25%，用中证500指数代理。",
+          "holdings": [
+            {
+              "secid": "1.000905",
+              "symbol": "000905",
+              "name": "中证500指数",
+              "weight": 0.9225,
+              "source": "index_proxy"
             }
           ]
         }
@@ -2963,6 +3726,20 @@
               "name": "中证消费龙头指数",
               "weight": 0.945,
               "source": "historical_proxy_extension"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露目标 ETF 华宝中证消费龙头 占基金资产净值 93.79%，用中证消费龙头指数代理。",
+          "holdings": [
+            {
+              "secid": "2.931068",
+              "symbol": "931068",
+              "name": "中证消费龙头指数",
+              "weight": 0.9379,
+              "source": "index_proxy"
             }
           ]
         }

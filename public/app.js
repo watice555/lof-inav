@@ -89,6 +89,7 @@ let loadFundsQueued = false;
 let backtestsRefreshing = false;
 let backtestRefreshInFlight = false;
 let csrfToken = null;
+let lastFundsPayload = null;
 let detailRequestId = 0;
 let detailAbortController = null;
 let tableRenderToken = 0;
@@ -169,7 +170,7 @@ const tableColumns = [
     className: "fund-col-estimate",
     defaultVisible: true,
     sortValue: (fund) => fund.estimated_nav,
-    cell: (fund) => fmt(fund.estimated_nav, 4),
+    cell: (fund) => estimatedNavCell(fund),
     exportCell: (fund) => [fmt(fund.estimated_nav, 4)],
   },
   {
@@ -184,13 +185,13 @@ const tableColumns = [
   },
   {
     key: "covered_weight",
-    title: "覆盖仓位",
+    title: "模型 / 计价",
     width: 0.07,
     className: "fund-col-covered",
     defaultVisible: false,
-    sortValue: (fund) => fund.covered_weight,
-    cell: (fund) => pct(fund.covered_weight),
-    exportCell: (fund) => [pct(fund.covered_weight)],
+    sortValue: (fund) => fund.modeled_weight,
+    cell: (fund) => coverageCell(fund),
+    exportCell: (fund) => [coverageText(fund)],
   },
   {
     key: "backtest_mae",
@@ -281,6 +282,33 @@ function valueWithMeta(valueHtml, metaText) {
       <div class="value-meta">${escapeHtml(metaText || "--")}</div>
     </div>
   `;
+}
+
+function estimatedNavCell(fund) {
+  const value = fmt(fund.estimated_nav, 4);
+  const modeled = fund.modeled_weight == null ? NaN : Number(fund.modeled_weight);
+  const pricedRatio = fund.priced_ratio == null ? NaN : Number(fund.priced_ratio);
+  const notes = [];
+  if (Number.isFinite(modeled) && modeled < 0.2) notes.push(`模型仓位 ${pct(modeled)}`);
+  if (Number.isFinite(pricedRatio) && pricedRatio < 0.999) notes.push(`计价率 ${pct(pricedRatio)}`);
+  return notes.length ? valueWithMeta(value, notes.join(" · ")) : value;
+}
+
+function coverageText(fund) {
+  const modeled = fund.modeled_weight == null ? NaN : Number(fund.modeled_weight);
+  const pricedRatio = fund.priced_ratio == null ? NaN : Number(fund.priced_ratio);
+  const modeledText = Number.isFinite(modeled) ? pct(modeled) : "--";
+  const pricedText = Number.isFinite(pricedRatio) ? pct(pricedRatio) : "--";
+  return `模型 ${modeledText} / 计价 ${pricedText}`;
+}
+
+function coverageCell(fund) {
+  const modeled = fund.modeled_weight == null ? NaN : Number(fund.modeled_weight);
+  const pricedRatio = fund.priced_ratio == null ? NaN : Number(fund.priced_ratio);
+  return valueWithMeta(
+    Number.isFinite(modeled) ? pct(modeled) : "--",
+    `计价 ${Number.isFinite(pricedRatio) ? pct(pricedRatio) : "--"}`
+  );
 }
 
 function renderTradePrice(fund) {
@@ -490,8 +518,34 @@ function scheduleRefreshPoll() {
   if (refreshPollTimer) return;
   refreshPollTimer = window.setTimeout(() => {
     refreshPollTimer = null;
-    loadFunds();
+    pollRefreshStatus();
   }, isPageActive() ? REFRESH_POLL_DELAY_MS : INACTIVE_REFRESH_DELAY_MS);
+}
+
+async function pollRefreshStatus() {
+  if (loadFundsInFlight) {
+    scheduleRefreshPoll();
+    return;
+  }
+  try {
+    const res = await fetch("/api/refresh-status", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const status = await res.json();
+    const data = { ...(lastFundsPayload || {}), ...status };
+    if (status.backtests_refreshing) backtestsRefreshing = true;
+    const refreshPending = isRefreshPending(status);
+    renderRefreshProgress(status.refresh_progress, refreshPending);
+    renderRefreshState(data);
+    backtestRefreshBtn.disabled = backtestRefreshInFlight || backtestsRefreshing;
+    if (refreshPending) {
+      scheduleRefreshPoll();
+    } else {
+      loadFunds();
+    }
+  } catch (error) {
+    console.error("刷新状态读取失败", error);
+    loadFunds();
+  }
 }
 
 function markUserActive() {
@@ -518,6 +572,7 @@ function handleVisibilityChange() {
 function isRefreshPending(data) {
   return Boolean(
     data.navs_refreshing ||
+      data.reports_refreshing ||
       data.quotes_refreshing ||
       data.purchase_limits_refreshing ||
       data.backtests_refreshing
@@ -629,6 +684,7 @@ function renderRefreshProgress(progress, pending) {
 function renderRefreshState(data) {
   const navRefreshTime = refreshTimeText(data.last_navs_refresh_success_at);
   const quoteRefreshTime = refreshTimeText(data.last_realtime_quotes_refresh_at);
+  const reportRefreshTime = refreshTimeText(data.last_reports_refresh_success_at);
   const backtestRefreshTime = refreshTimeText(
     data.last_incremental_backtests_refresh_at,
     data.backtests_disabled ? "未启用" : "未刷新"
@@ -638,13 +694,14 @@ function renderRefreshState(data) {
   const refreshPrefix = [
     progressLabel && isRefreshPending(data) ? progressLabel : "",
     !progressLabel && data.navs_refreshing ? "净值刷新中" : "",
+    !progressLabel && data.reports_refreshing ? "持仓检查中" : "",
     !progressLabel && data.quotes_refreshing ? "行情刷新中" : "",
     !progressLabel && data.purchase_limits_refreshing ? "申购限额刷新中" : "",
     !progressLabel && data.backtests_refreshing ? "回测刷新中" : "",
   ]
     .filter(Boolean)
     .join("，");
-  const fullState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 回测任务 ${backtestRefreshTime} / 回测数据 ${backtestDataRange}`;
+  const fullState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 持仓 ${reportRefreshTime} / 回测任务 ${backtestRefreshTime} / 回测数据 ${backtestDataRange}`;
 
   const compactParts = [
     `净值 ${compactRefreshTimeText(data.last_navs_refresh_success_at)}`,
@@ -680,6 +737,7 @@ async function loadFunds() {
     if (!Array.isArray(data.funds)) throw new Error("返回数据格式异常");
 
     if (data.csrf_token) csrfToken = data.csrf_token;
+    lastFundsPayload = data;
     currentFunds = data.funds;
     const wasBacktestsRefreshing = backtestsRefreshing;
     backtestsRefreshing = Boolean(data.backtests_refreshing);
@@ -1120,7 +1178,8 @@ function renderFunds(funds) {
 
 function renderPurchaseLimit(purchaseLimit) {
   if (!purchaseLimit || !purchaseLimit.display) return "--";
-  return escapeHtml(purchaseLimit.display);
+  const display = escapeHtml(purchaseLimit.display);
+  return purchaseLimit.stale ? valueWithMeta(display, "待更新") : display;
 }
 
 function renderAnnouncement(announcement) {
@@ -1193,7 +1252,8 @@ function scrollToDetails() {
 function renderHoldings(rows) {
   if (!rows.length) return `<div class="muted">暂无持仓数据</div>`;
   return `
-    <table class="mini-table">
+    <div class="detail-table-wrap" role="region" aria-label="持仓明细表" tabindex="0">
+    <table class="mini-table holdings-table">
       <colgroup>
         <col class="holding-col-asset" />
         <col class="holding-col-code" />
@@ -1219,14 +1279,16 @@ function renderHoldings(rows) {
           .join("")}
       </tbody>
     </table>
+    </div>
   `;
 }
 
 function renderBacktest(rows) {
   if (!rows.length) return `<div class="muted">暂无回测数据</div>`;
   return `
-    <table class="mini-table">
-      <thead><tr><th>日期</th><th>实际净值</th><th>价格</th><th>折溢价</th><th>估算净值</th><th>误差</th><th>覆盖</th><th>数据质量</th></tr></thead>
+    <div class="detail-table-wrap" role="region" aria-label="最近回测表" tabindex="0">
+    <table class="mini-table backtest-table">
+      <thead><tr><th>日期</th><th>实际净值</th><th>价格</th><th>折溢价</th><th>估算净值</th><th>误差</th><th>计价 / 模型</th><th>数据质量</th></tr></thead>
       <tbody>
         ${rows
           .slice(0, 20)
@@ -1239,20 +1301,24 @@ function renderBacktest(rows) {
             <td>${signedPct(row.close_premium)}</td>
             <td>${navWithChange(row.estimated_nav, row.previous_nav)}</td>
             <td>${signedPct(row.error_pct)}</td>
-            <td>${pct(row.covered_weight)}</td>
+            <td>${pct(row.priced_ratio)} / ${pct(row.modeled_weight)}</td>
             <td>${renderBacktestQuality(row)}</td>
           </tr>`
           )
           .join("")}
       </tbody>
     </table>
+    </div>
   `;
 }
 
 function renderBacktestQuality(row) {
   const diagnostics = row?.price_diagnostics;
   if (row?.data_quality === "low_coverage") {
-    return `<span class="quality-warn">低覆盖 ${pct(row.covered_weight)}</span>`;
+    return `<span class="quality-warn">计价不足 ${pct(row.priced_ratio)}</span>`;
+  }
+  if (row?.data_quality === "outlier") {
+    return `<span class="quality-warn">误差异常 ${signedPct(row.error_pct)}</span>`;
   }
   if (!diagnostics) return "--";
   const assetWeight = Number(diagnostics.asset_stale_weight || 0);
@@ -1265,7 +1331,7 @@ function renderBacktestQuality(row) {
       `休市 ${item.secid} ${item.name}: ${item.previous_date}->${item.previous_price_date}, ${item.current_date}->${item.current_price_date}, 权重 ${pct(item.weight)}`
   );
   if (!total) {
-    if (!marketClosedWeight) return `<span class="quality-ok">正常</span>`;
+    if (!marketClosedWeight) return `<span class="quality-ok">输入完整</span>`;
     return `<span class="quality-ok" title="${escapeHtml(marketClosedRows.join("\n"))}">休市回退 ${pct(marketClosedWeight)}</span>`;
   }
   const details = [];
@@ -1306,7 +1372,8 @@ function getExportColumns() {
 }
 
 function csvEscape(value) {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
+  if (/^[\t ]*[=+\-@]/.test(text)) text = `'${text}`;
   if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;
 }
@@ -1496,7 +1563,9 @@ async function exportPng() {
 
   try {
     const funds = getVisibleFunds();
-    const scale = 2;
+    const preferredScale = 2;
+    const maxCanvasDimension = 16000;
+    const maxCanvasPixels = 32_000_000;
     const width = 1440;
     const margin = 24;
     const contentWidth = width - margin * 2;
@@ -1515,9 +1584,15 @@ async function exportPng() {
     const tableHeight = 42 + (funds.length ? rowHeights.reduce((sum, value) => sum + value, 0) : 72);
     const disclaimerHeight = 52 + disclaimerLines.length * 22;
     const height = margin + 78 + 18 + tableHeight + 16 + disclaimerHeight + margin;
+    const scale = Math.min(
+      preferredScale,
+      maxCanvasDimension / width,
+      maxCanvasDimension / height,
+      Math.sqrt(maxCanvasPixels / (width * height))
+    );
 
-    canvas.width = width * scale;
-    canvas.height = height * scale;
+    canvas.width = Math.max(1, Math.floor(width * scale));
+    canvas.height = Math.max(1, Math.floor(height * scale));
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.fillStyle = "#fff";
     context.fillRect(0, 0, width, height);

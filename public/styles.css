@@ -819,6 +819,7 @@ button:disabled {
 }
 
 .panel {
+  min-width: 0;
   padding: 16px;
   min-height: 260px;
 }
@@ -842,6 +843,26 @@ button:disabled {
 .mini-table td {
   padding: 8px 6px;
   font-size: 12px;
+}
+
+.detail-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.detail-table-wrap:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.holdings-table {
+  min-width: 720px;
+}
+
+.backtest-table {
+  min-width: 900px;
 }
 
 .mini-table td:first-child {
@@ -891,6 +912,12 @@ button:disabled {
   padding: 0 8px;
   color: #415064;
   font-size: 12px;
+}
+
+@media (max-width: 1280px) {
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 900px) {
