@@ -2,7 +2,6 @@
 setlocal
 
 cd /d "%~dp0"
-set "URL=http://127.0.0.1:8000"
 set "SERVE=%~dp0serve.py"
 
 if exist ".venv\Scripts\python.exe" (
@@ -23,8 +22,8 @@ if exist ".venv\Scripts\python.exe" (
     )
 )
 
-start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process '%URL%'"
-echo Starting LOF iNAV at %URL%
+set "LOF_INAV_OPEN_BROWSER=1"
+echo Starting LOF iNAV...
 %PYTHON% "%SERVE%"
 
 echo.

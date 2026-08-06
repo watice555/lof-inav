@@ -71,7 +71,7 @@ python serve.py
 访问：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8001
 ```
 
 如果修改了 `config/fund_rules.json`，需要重启服务，因为 `FUNDS` 在模块导入时加载。

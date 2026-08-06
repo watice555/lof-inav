@@ -66,8 +66,10 @@ print(Counter(r["market_category"] for r in rows if r["included_in_site"] == "ye
 网站地址：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8001
 ```
+
+如果 8001 端口已被其他程序占用，一键启动会自动选择 8002 起的可用端口（最多向上查找 100 个端口），并在服务成功监听后再打开正确的页面。设置了 `LOF_INAV_PORT` 时则严格使用指定端口，冲突时会明确报错。
 
 `quick_start.bat` 默认使用快速构建，只抓当前估值所需数据，不拉历史日线、不跑回测：
 
@@ -98,7 +100,7 @@ python serve.py
 
 ## 发布 Windows exe
 
-可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会监听 `http://127.0.0.1:8000`，并自动打开浏览器。
+可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会优先监听 `http://127.0.0.1:8001`，端口冲突时自动选择后续可用端口（最多向上查找 100 个端口），并在监听成功后打开浏览器。
 
 在开发机上运行：
 
@@ -124,7 +126,7 @@ python build.py --current-only
 config\fund_rules.json
 ```
 
-如果本机 `8000` 端口已被占用，可以先设置 `LOF_INAV_PORT` 再启动：
+如果本机 `8001` 端口已被占用，可以先设置 `LOF_INAV_PORT` 再启动：
 
 ```powershell
 $env:LOF_INAV_PORT = "8010"

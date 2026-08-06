@@ -2,7 +2,6 @@
 setlocal EnableDelayedExpansion
 
 cd /d "%~dp0"
-set "URL=http://127.0.0.1:8000"
 set "DB_PATH=data\lof_inav.sqlite3"
 set "VENV_PY=.venv\Scripts\python.exe"
 
@@ -35,8 +34,8 @@ if "%~1"=="--rebuild" (
     )
 )
 
-echo Starting LOF iNAV at %URL%
-start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process '%URL%'"
+set "LOF_INAV_OPEN_BROWSER=1"
+echo Starting LOF iNAV...
 "%VENV_PY%" serve.py
 
 echo.

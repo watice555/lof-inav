@@ -8,6 +8,7 @@ import os
 import secrets
 import threading
 import time
+import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from statistics import pstdev
@@ -35,7 +36,10 @@ REFRESH_PROGRESS_STALE_SECONDS = 60 * 60
 LOGGER = logging.getLogger(__name__)
 CSRF_TOKEN = secrets.token_urlsafe(32)
 HOST = os.environ.get("LOF_INAV_HOST", "127.0.0.1")
-PORT = int(os.environ.get("LOF_INAV_PORT", "8000"))
+PORT = int(os.environ.get("LOF_INAV_PORT", "8001"))
+PORT_IS_EXPLICIT = "LOF_INAV_PORT" in os.environ
+PORT_FALLBACK_ATTEMPTS = 100
+PID_PATH = data_dir() / "lof_inav.pid"
 URL = f"http://{HOST}:{PORT}"
 ALLOWED_LOCAL_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"{HOST}:{PORT}"}
 ALLOWED_LOCAL_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}", URL}
@@ -327,17 +331,98 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
+    global PORT, URL, ALLOWED_LOCAL_HOSTS, ALLOWED_LOCAL_ORIGINS
+
     configure_logging()
     init_db()
-    try:
-        server = SingleInstanceHTTPServer((HOST, PORT), Handler)
-    except OSError as exc:
-        if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
-            raise SystemExit(f"LOF iNAV server is already running at {URL}") from exc
-        raise
+    requested_port = PORT
+    server = create_http_server()
+    actual_port = int(server.server_address[1])
+    PORT = actual_port
+    URL = f"http://{HOST}:{PORT}"
+    ALLOWED_LOCAL_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", f"{HOST}:{PORT}"}
+    ALLOWED_LOCAL_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}", URL}
+    if actual_port != requested_port:
+        message = (
+            f"Port {requested_port} is in use by another program; "
+            f"using {actual_port} instead."
+        )
+        LOGGER.warning(message)
+        print(message)
     LOGGER.info("LOF iNAV server started at %s", URL)
     print(f"LOF iNAV server: {URL}")
-    server.serve_forever()
+    pid_token = write_server_pid()
+    if should_open_browser():
+        threading.Thread(target=webbrowser.open, args=(URL,), daemon=True).start()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        remove_server_pid(pid_token)
+
+
+def create_http_server() -> SingleInstanceHTTPServer:
+    if PORT_IS_EXPLICIT:
+        candidate_ports = [PORT]
+    else:
+        last_fallback_port = min(PORT + PORT_FALLBACK_ATTEMPTS, 65_535)
+        candidate_ports = range(PORT, last_fallback_port + 1)
+
+    last_error: OSError | None = None
+    for candidate_port in candidate_ports:
+        try:
+            return SingleInstanceHTTPServer((HOST, candidate_port), Handler)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE and getattr(exc, "winerror", None) != 10048:
+                raise
+            last_error = exc
+
+    if PORT_IS_EXPLICIT:
+        message = f"Cannot start LOF iNAV: port {PORT} is already used by another program."
+    else:
+        message = (
+            f"Cannot start LOF iNAV: ports {PORT}-{min(PORT + PORT_FALLBACK_ATTEMPTS, 65_535)} "
+            "are already in use."
+        )
+    raise SystemExit(message) from last_error
+
+
+def should_open_browser() -> bool:
+    return (
+        os.environ.get("LOF_INAV_OPEN_BROWSER") == "1"
+        and os.environ.get("LOF_INAV_NO_BROWSER") != "1"
+    )
+
+
+def write_server_pid() -> str:
+    token = secrets.token_hex(16)
+    payload = {
+        "pid": os.getpid(),
+        "port": PORT,
+        "token": token,
+        "started_at": utc_now(),
+    }
+    PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = PID_PATH.with_suffix(".pid.tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, PID_PATH)
+    return token
+
+
+def remove_server_pid(token: str) -> None:
+    try:
+        payload = json.loads(PID_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not secrets.compare_digest(str(payload.get("token") or ""), token):
+        return
+    try:
+        PID_PATH.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def configure_logging() -> None:
