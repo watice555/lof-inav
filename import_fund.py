@@ -15,13 +15,18 @@ from app.build import (
 from app.config import FUNDS
 from app.db import connect, init_db, set_meta
 from app.sources import utc_now
-from app.valuation import backtest_summary, run_backtest
+from app.valuation import DEFAULT_BACKTEST_DAYS, backtest_summary, run_backtest
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import or refresh one configured LOF fund.")
     parser.add_argument("code", help="fund code, e.g. 160924")
-    parser.add_argument("--days", type=int, default=30, help="backtest NAV rows to keep")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_BACKTEST_DAYS,
+        help=f"backtest NAV rows to keep (default: {DEFAULT_BACKTEST_DAYS})",
+    )
     parser.add_argument("--outliers", type=int, default=5, help="number of largest backtest errors to print")
     parser.add_argument(
         "--current-only",

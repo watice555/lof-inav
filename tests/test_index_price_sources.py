@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.config import YAHOO_PRICE_SYMBOLS
+from app.config import FUNDS, YAHOO_PRICE_SYMBOLS
 from app.sources import (
     CSINDEX_INDEX_SECIDS,
     csindex_daily_prices,
@@ -324,6 +324,55 @@ class IndexPriceSourceTests(unittest.TestCase):
         hang_seng.assert_called_once_with("124.HSTECH", "20260710", "20260710")
         eastmoney.assert_not_called()
         self.assertNotIn("124.HSTECH", YAHOO_PRICE_SYMBOLS)
+
+
+class FundEtfBasketTests(unittest.TestCase):
+    def test_160216_q2_uses_disclosed_top_ten_basket(self) -> None:
+        q2 = next(
+            period
+            for period in FUNDS["160216"].manual_holdings
+            if period["report_date"] == "2026-06-30"
+        )
+        expected = {
+            "IAU": 0.1611,
+            "GLD": 0.107,
+            "DBB": 0.1023,
+            "UGL": 0.1002,
+            "DBA": 0.054,
+            "XOP": 0.0502,
+            "ZSL": 0.041,
+            "TMF": 0.0322,
+            "SCO": 0.0235,
+            "OIH": 0.0213,
+        }
+
+        self.assertEqual(
+            {holding["symbol"]: holding["weight"] for holding in q2["holdings"]},
+            expected,
+        )
+        self.assertAlmostEqual(sum(expected.values()), 0.6928)
+
+    def test_160216_q2_etfs_have_yahoo_fallback_symbols(self) -> None:
+        symbols = {
+            "IAU",
+            "GLD",
+            "DBB",
+            "UGL",
+            "DBA",
+            "XOP",
+            "ZSL",
+            "TMF",
+            "SCO",
+            "OIH",
+        }
+
+        self.assertEqual(
+            {
+                f"107.{symbol}": YAHOO_PRICE_SYMBOLS.get(f"107.{symbol}")
+                for symbol in symbols
+            },
+            {f"107.{symbol}": symbol for symbol in symbols},
+        )
 
 
 if __name__ == "__main__":

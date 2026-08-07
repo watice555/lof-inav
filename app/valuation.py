@@ -19,6 +19,8 @@ from .sources import quote_session_date
 
 MIN_BACKTEST_PRICED_RATIO = 0.6
 BACKTEST_OUTLIER_ABS_ERROR = 0.2
+DEFAULT_BACKTEST_DAYS = 7
+BACKTEST_DISPLAY_ROWS = 30
 REALTIME_QUOTE_MAX_AGE_SECONDS = 15 * 60
 SQLITE_BATCH_SIZE = 400
 
@@ -661,7 +663,12 @@ def _row_value(row: sqlite3.Row | dict[str, Any], key: str) -> Any:
         return None
 
 
-def run_backtest(con: sqlite3.Connection, code: str, days: int = 30, lag_days: int = 25) -> list[dict[str, Any]]:
+def run_backtest(
+    con: sqlite3.Connection,
+    code: str,
+    days: int = DEFAULT_BACKTEST_DAYS,
+    lag_days: int = 25,
+) -> list[dict[str, Any]]:
     navs = con.execute(
         "select * from navs where fund_code = ? order by date asc", (code,)
     ).fetchall()
@@ -1014,7 +1021,8 @@ def holdings_available_on(
 
 def backtest_summary(con: sqlite3.Connection, code: str) -> dict[str, Any]:
     rows = con.execute(
-        "select * from backtests where fund_code = ? order by date desc limit 30", (code,)
+        "select * from backtests where fund_code = ? order by date desc limit ?",
+        (code, BACKTEST_DISPLAY_ROWS),
     ).fetchall()
     if not rows:
         return {"count": 0}

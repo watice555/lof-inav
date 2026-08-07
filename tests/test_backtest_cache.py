@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from app.build import (
 from app.config import FundConfig
 from app.db import BACKTEST_CACHE_VERSION, SCHEMA, ensure_cache_versions, get_meta, set_meta
 from app.valuation import (
+    DEFAULT_BACKTEST_DAYS,
     _backtest_price_series,
     backtest_summary,
     calculate_backtest_row,
@@ -50,6 +52,13 @@ def seed_fund(con: sqlite3.Connection) -> None:
 
 
 class BacktestCacheTests(unittest.TestCase):
+    def test_full_backtest_default_is_seven_rows(self) -> None:
+        self.assertEqual(DEFAULT_BACKTEST_DAYS, 7)
+        self.assertEqual(
+            inspect.signature(run_backtest).parameters["days"].default,
+            DEFAULT_BACKTEST_DAYS,
+        )
+
     def test_first_incremental_backtest_uses_seven_calendar_day_window(self) -> None:
         con = make_connection()
         con.executemany(

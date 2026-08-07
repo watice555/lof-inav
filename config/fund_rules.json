@@ -1215,7 +1215,7 @@
       ],
       "proxy_basis": "non_cash_gap",
       "manual_holdings_mode": "proxy_then_manual_replace",
-      "note": "国泰大宗商品 QDII-LOF，2026Q1 原始公告基金明细穿透为 Brent/黄金/WTI/铜/农业/能源股票",
+      "note": "国泰大宗商品 QDII-LOF；2026Q1 穿透为 Brent/黄金/WTI/铜/农业/能源股票，2026Q2 改为直接跟踪含反向及杠杆产品的公告前十大基金篮子",
       "manual_holdings": [
         {
           "report_date": "2025-12-31",
@@ -1291,6 +1291,83 @@
               "name": "SPDR S&P Oil & Gas Exploration & Production ETF",
               "weight": 0.0487,
               "source": "announcement_fund_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-06-30",
+          "publish_date": "2026-07-21",
+          "rationale": "2026Q2 原始季报 5.9 披露 IAU 16.11%、GLD 10.70%、DBB 10.23%、UGL 10.02%、DBA 5.40%、XOP 5.02%、ZSL 4.10%、TMF 3.22%、SCO 2.35%、OIH 2.13%，前十大合计 69.28%。反向及杠杆产品按基金本身的公告名义权重直接跟踪，以保留每日重置和路径依赖特征。",
+          "holdings": [
+            {
+              "secid": "107.IAU",
+              "symbol": "IAU",
+              "name": "iShares Gold Trust",
+              "weight": 0.1611,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.GLD",
+              "symbol": "GLD",
+              "name": "SPDR Gold Shares",
+              "weight": 0.107,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.DBB",
+              "symbol": "DBB",
+              "name": "Invesco DB Base Metals Fund",
+              "weight": 0.1023,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.UGL",
+              "symbol": "UGL",
+              "name": "ProShares Ultra Gold",
+              "weight": 0.1002,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.DBA",
+              "symbol": "DBA",
+              "name": "Invesco DB Agriculture Fund",
+              "weight": 0.054,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.XOP",
+              "symbol": "XOP",
+              "name": "State Street SPDR S&P Oil & Gas Exploration & Production ETF",
+              "weight": 0.0502,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.ZSL",
+              "symbol": "ZSL",
+              "name": "ProShares UltraShort Silver",
+              "weight": 0.041,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.TMF",
+              "symbol": "TMF",
+              "name": "Direxion Daily 20+ Year Treasury Bull 3X Shares",
+              "weight": 0.0322,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.SCO",
+              "symbol": "SCO",
+              "name": "ProShares UltraShort Bloomberg Crude Oil",
+              "weight": 0.0235,
+              "source": "announcement_etf_holding"
+            },
+            {
+              "secid": "107.OIH",
+              "symbol": "OIH",
+              "name": "VanEck Oil Services ETF",
+              "weight": 0.0213,
+              "source": "announcement_etf_holding"
             }
           ]
         }

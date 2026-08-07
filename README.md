@@ -93,7 +93,7 @@ python build.py --current-only
 python build.py
 ```
 
-`build.py` 默认生成最近 30 条净值回测。完整构建会按这 30 条回测对应的净值日期精确补齐历史日线和回测标记价格，不会无界下载全部历史；基金数量较多，首次完整构建仍然会比较慢，并且需要访问东方财富、新浪财经、Yahoo Finance、中证指数和恒生指数的公开接口。
+`build.py` 默认生成最近 7 条净值回测。完整构建会按这 7 条回测对应的净值日期精确补齐历史日线和回测标记价格，不会无界下载全部历史；基金数量较多，首次完整构建仍然会比较慢，并且需要访问东方财富、新浪财经、Yahoo Finance、中证指数和恒生指数的公开接口。需要更长窗口时可显式传入 `--days <条数>`。
 
 开发或手工运行时，也可以自己创建虚拟环境并启动服务：
 
@@ -114,29 +114,31 @@ macOS 停止服务时，双击 [`stop.command`](stop.command)，或在终端运�
 
 停止脚本会核对 PID、启动命令和实际监听端口，只终止当前项目启动的服务；如果默认端口属于其他程序，会保留该程序并给出提示。
 
-## 发布 Windows exe
+## 发布 Windows Portable 版
 
-可以用 PyInstaller 打包成给普通用户双击运行的 Windows 可执行文件。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会优先监听 `http://127.0.0.1:8001`，端口冲突时自动选择后续可用端口，并在监听成功后打开浏览器。
+公开发布使用 PyInstaller `onedir` 生成免安装 Portable ZIP。打包入口是 [`lof_inav_desktop.py`](lof_inav_desktop.py)：启动后会优先监听 `http://127.0.0.1:8001`，端口冲突时自动选择后续可用端口，并在监听成功后打开浏览器。
 
-在开发机上运行：
+打包前，`data\lof_inav.sqlite3` 必须与当前基金规则匹配、全量基金数据完整，并处于 `complete` 状态。Windows x64 开发机上运行：
 
 ```powershell
-.\scripts\build_exe.ps1
+.\scripts\build_portable.ps1 -Version 1.0.0
 ```
 
-脚本会安装运行依赖和打包依赖，然后生成：
+脚本会依次校验配置、运行离线测试、从当前数据库生成精简种子库、打包应用并压缩为：
 
 ```text
-dist\LOF_iNAV.exe
+dist\LOF_iNAV-Portable-1.0.0-win-x64.zip
 ```
 
-把 `LOF_iNAV.exe` 放到一个可写目录后双击运行即可。首次运行时，如果 exe 旁边还没有 `data\lof_inav.sqlite3`，程序会自动执行一次快速构建，等价于：
+种子库默认保留每只基金最近 200 条净值、5 个持仓报告期、每个证券最近 160 条历史价格和最近 7 条已有回测；公告、申购限制、当前行情和必要元数据也会保留。完整的开发数据库、公告 PDF、日志和抓取诊断不会进入发布包。源数据库不满足就绪条件时，脚本会停止，不能把不完整数据发布给用户。
 
-```powershell
-python build.py --current-only
+用户完整解压 ZIP 后双击 `LOF_iNAV.exe`。首次运行时，程序会把包内只读种子库复制为：
+
+```text
+data\lof_inav.sqlite3
 ```
 
-数据库和日志会写到 exe 同目录的 `data\` 下。默认基金规则会打进 exe；如果需要覆盖规则，可以在 exe 同目录放置：
+页面会立即使用种子数据，同时按正常调度在后台更新净值、行情、公告和持仓。只有种子缺失或失效时，才退回原有的首次快速构建流程。数据库和日志写在 Portable 目录的 `data\` 下；默认基金规则既包含在程序资源中，也放在同目录供检查或覆盖：
 
 ```text
 config\fund_rules.json
@@ -146,10 +148,10 @@ config\fund_rules.json
 
 ```powershell
 $env:LOF_INAV_PORT = "8010"
-.\dist\LOF_iNAV.exe
+.\LOF_iNAV.exe
 ```
 
-这种 exe 适合降低普通用户门槛：用户不需要安装 Python，也不需要打开命令行。它仍然是本地网站形态，网络数据源不可用时页面数据也会受影响。
+升级时退出旧版，把新版 ZIP 解压到新文件夹并直接运行即可；确认新版正常后删除旧文件夹，不复制旧版 `data`，也不覆盖解压。每个版本相互独立。用户不需要安装 Python 或打开命令行，但它仍然是本地网站形态，后续数据更新依赖网络数据源。
 
 ## 日常命令
 
@@ -183,7 +185,7 @@ python build.py --current-only
 指定回测净值条数：
 
 ```powershell
-python build.py --days 30
+python build.py --days 14
 ```
 
 刷新单只基金，适合修改规则后验证：
@@ -195,7 +197,7 @@ python import_fund.py 160924
 可选参数：
 
 ```powershell
-python import_fund.py 160924 --days 30 --outliers 5
+python import_fund.py 160924 --days 14 --outliers 5
 python import_fund.py 160924 --current-only
 ```
 
@@ -307,9 +309,9 @@ error_pct = estimated_nav / actual_nav - 1
 - `覆盖仓位`：日内估值里当前最新持仓/代理资产有实时行情并参与计算的权重合计；详情同时展示建模权重和取价比例。
 - `最大误差`、`最新误差`、`平均覆盖仓位`、`平均取价比例`：用于判断代理规则和行情覆盖是否稳定。
 
-单只基金详情页展示最近 30 条回测明细，包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
+单只基金详情页最多展示最近 30 条回测明细；默认构建只有最近 7 条，手动扩大 `--days` 后可以继续查看更多记录。明细包括日期、实际净值、估算净值、单日误差、覆盖仓位、历史场内收盘价和历史折溢价。
 
-网页里的增量回测只补每只基金最新净值日前 7 个自然日内的缺口，避免首次启用回测时追补多年历史。需要重建最近 30 条或更多历史回测时，使用 `python build.py` 或 `python build.py --days <条数>`。
+网页里的增量回测只补每只基金最新净值日前 7 个自然日内的缺口，避免首次启用回测时追补多年历史。默认完整构建生成最近 7 条；需要更多历史回测时，显式使用 `python build.py --days <条数>`。
 
 ## 规则配置
 
@@ -349,7 +351,7 @@ error_pct = estimated_nav / actual_nav - 1
 
 - `GET /api/funds`：基金列表、估值、折溢价、场内交易 `trade_secid`、公告、申购限额、回测摘要。
 - `GET /api/funds/{code}/holdings`：最新一期持仓/代理资产及对应行情。
-- `GET /api/funds/{code}/backtest`：最近 30 条回测明细。
+- `GET /api/funds/{code}/backtest`：最多最近 30 条回测明细，默认构建产生 7 条。
 
 页面功能：
 

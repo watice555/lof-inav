@@ -13,3 +13,45 @@ Device: TianhaodeMacBook-Pro (macOS 26.5.2, arm64)
 
 - Phase: Mirrored the private repository's public-safe source, configuration, documentation, scripts, and tests into the sibling `LOF_iNAV_public` repository using the documented exclusions for `.git/`, `.venv/`, `data/`, `__pycache__/`, `experimental/`, `private_public_sync/`, and `*.pyc`.
 - Verification: Confirmed both repositories were clean before synchronization and the public branch matched `origin/main`; previewed the mirror with `rsync --dry-run --delete`; passed `git diff --check`, private-path tracking checks, `python scripts/validate_config.py`, `node --check public/app.js`, `python -m compileall -q app scripts *.py`, all 116 offline `unittest` tests, and a secret-pattern scan with no matches. Network-backed data refreshes were skipped because the synchronized changes were fully covered by offline validation.
+
+## 2026-08-07 13:47 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Added the macOS `.DS_Store` metadata file to the repository ignore rules.
+- Verification: Confirmed `.DS_Store` is ignored with `git check-ignore`, passed `git diff --check`, and verified no unrelated files were included in the phase.
+
+## 2026-08-07 14:14 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Audited fund 160216 against the locally downloaded 2026Q1 and 2026Q2 quarterly reports without changing its Q1 manual configuration. Confirmed that the Q2 report contains a materially different mix of direct commodity, inverse/leveraged, long-duration Treasury, base-metals, exploration-and-production, and oil-services funds; also identified that the current `proxy_then_manual_replace` fallback has already produced a Q2 database snapshot consisting solely of DBC at 79.44%, rather than continuing to use the Q1 manual basket.
+- Verification: Visually rendered and reviewed report pages 10-12 for both `data/160216_2026q1.pdf` and `data/160216_2026q2.pdf`; cross-checked their extracted text; inspected the 160216 rule, builder fallback, valuation snapshot selection, git history, current SQLite holdings and backtests; and passed `python3 scripts/validate_config.py`. Network-backed checks were skipped because the original reports and current generated database snapshot were already available locally.
+
+## 2026-08-07 14:28 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Replaced fund 160216's automatic 2026Q2 DBC fallback with the quarterly report's directly held top-ten fund basket at 69.28% total nominal weight. Preserved UGL, ZSL, TMF, and SCO as the held daily-reset products, added Yahoo fallback symbols for all ten ETFs, and confirmed that all 20 `proxy_then_manual_replace` funds now have manual holdings for their latest database quarter.
+- Verification: Passed `python3 scripts/validate_config.py`, 15 focused configuration and price-source tests, all 118 offline `unittest` tests, Python compilation, and `git diff --check`. Ran `.venv/bin/python import_fund.py 160216 --current-only` successfully: the Eastmoney batch source was unavailable through the configured proxy, Yahoo fallback supplied all ten quotes, the latest SQLite snapshot contains the ten disclosed ETFs at 69.28%, and each has current quote data plus daily prices from at least 2026-07-22. Backtesting was intentionally skipped by `--current-only`.
+
+## 2026-08-07 14:58:28 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Replaced the Windows single-file packaging path with a versioned PyInstaller `onedir` Portable ZIP workflow. Added release-ready seed database generation with bounded NAV, holding, price, and backtest retention; removed machine-specific diagnostic metadata; added integrity/readiness gates and atomic output replacement; installed the packaged seed atomically on first launch without overwriting an existing user database; and documented the independent-folder upgrade workflow and package contents.
+- Verification: Passed all 123 offline `unittest` tests, configuration validation, Python compilation, frontend JavaScript syntax checking, PowerShell parsing/non-Windows guard checks, and `git diff --check`. Built a macOS PyInstaller `onedir` smoke artifact and confirmed the executable plus bundled frontend, rules, and seed paths. Ran the seed trimmer against a release-state simulation of the 338-fund local cache: it remained ready with `pragma integrity_check=ok`, retained 67,600 NAVs, 26,616 holdings, 378,100 daily prices, all 338 announcements and purchase-limit rows, and compacted to 51,519,488 bytes. Confirmed the unmodified local database is correctly rejected because its configuration hash is pending after the latest fund-rule change, with no partial seed left behind. A real Windows x64 ZIP was not produced on this macOS device; the current database must first complete a release-ready build, then the final script must run on Windows x64.
+
+## 2026-08-07 15:06:30 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Unified the default full backtest window at seven NAV rows across the valuation function, all-fund build, single-fund import, CLI help, and Portable seed retention. Preserved explicit `--days` and `--backtest-rows` overrides for longer manual runs, and named the separate 30-row UI/API display ceiling so manually generated history remains visible without being mistaken for a 30-row build default.
+- Verification: Passed 22 focused backtest, CLI, and Portable seed tests plus all 127 offline `unittest` tests; confirmed the three command-line help screens report the seven-row default; passed configuration validation, Python compilation, frontend JavaScript syntax checking, and `git diff --check`. Network-backed builds were skipped because this change only alters bounded defaults and is fully covered by offline tests.
+
+## 2026-08-07 15:10:51 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Mirrored the private repository's current public-safe source, fund rules, Portable packaging workflow, documentation, and tests into the sibling `LOF_iNAV_public` repository. Used the documented exclusions for `.git/`, `.venv/`, `data/`, caches, `build/`, `dist/`, `experimental/`, and `private_public_sync/`; no generated database, report PDF, build artifact, or private workflow file was transferred.
+- Verification: Confirmed both repositories were clean before synchronization; previewed the mirror with `rsync --dry-run --delete`; passed the public repository's configuration validation, all 127 offline `unittest` tests, Python compilation, frontend JavaScript syntax checking, `git diff --check`, secret-pattern scanning, private-path tracking checks, generated-file extension checks, and post-sync checksum parity for all public-safe files. Network-backed refreshes and a Windows executable build were skipped because the synchronized source changes were covered offline and the current device is macOS.

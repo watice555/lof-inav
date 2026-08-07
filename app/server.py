@@ -24,6 +24,7 @@ from .market_calendar import is_trading_session
 from .runtime import data_dir, resource_root
 from .sources import app_today, utc_now
 from .valuation import (
+    BACKTEST_DISPLAY_ROWS,
     IntradayPrefetch,
     backtest_price_diagnostics,
     estimate_intraday,
@@ -373,9 +374,9 @@ class Handler(SimpleHTTPRequestHandler):
                      and p.close > 0
                     where b.fund_code = ?
                     order by b.date desc
-                    limit 30
+                    limit ?
                     """,
-                    (code,),
+                    (code, BACKTEST_DISPLAY_ROWS),
                 )
             ]
             price_lookup_cache: dict[

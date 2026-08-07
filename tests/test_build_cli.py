@@ -42,6 +42,24 @@ class BuildCliTests(unittest.TestCase):
     def test_success_returns_zero(self) -> None:
         self.assertEqual(self.run_cli([], result()), 0)
 
+    def test_default_full_build_uses_seven_backtest_rows(self) -> None:
+        with (
+            patch.object(build_cli, "build_all", return_value=result()) as build_all,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(build_cli.main([]), 0)
+
+        build_all.assert_called_once_with(days=7, update_backtests=True)
+
+    def test_days_override_is_forwarded(self) -> None:
+        with (
+            patch.object(build_cli, "build_all", return_value=result()) as build_all,
+            redirect_stdout(StringIO()),
+        ):
+            self.assertEqual(build_cli.main(["--days", "21"]), 0)
+
+        build_all.assert_called_once_with(days=21, update_backtests=True)
+
 
 if __name__ == "__main__":
     unittest.main()

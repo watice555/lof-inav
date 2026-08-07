@@ -4,11 +4,17 @@ import argparse
 import logging
 
 from app.build import build_all
+from app.valuation import DEFAULT_BACKTEST_DAYS
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build local LOF iNAV data cache.")
-    parser.add_argument("--days", type=int, default=30, help="backtest NAV rows to keep")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_BACKTEST_DAYS,
+        help=f"backtest NAV rows to keep (default: {DEFAULT_BACKTEST_DAYS})",
+    )
     parser.add_argument(
         "--current-only",
         action="store_true",

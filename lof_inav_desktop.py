@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.build import build_all
 from app.db import connect, database_is_ready, init_db
+from app.runtime import install_seed_database
 from app.server import main
 
 
@@ -24,6 +25,8 @@ def database_ready() -> bool:
 
 
 def ensure_initial_data() -> bool:
+    if install_seed_database():
+        print("Installed the packaged starter database.")
     if database_ready():
         return True
 

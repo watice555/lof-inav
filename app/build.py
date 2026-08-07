@@ -34,6 +34,7 @@ from .sources import (
     utc_now,
 )
 from .valuation import (
+    DEFAULT_BACKTEST_DAYS,
     fx_secid_for_asset,
     holdings_available_on,
     latest_holdings,
@@ -134,7 +135,10 @@ def daily_price_fetch_diagnostic(secid: str, exc: Exception) -> dict[str, str]:
     }
 
 
-def build_all(days: int = 30, update_backtests: bool = True) -> dict[str, list[dict[str, Any]]]:
+def build_all(
+    days: int = DEFAULT_BACKTEST_DAYS,
+    update_backtests: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
     init_db()
     build_mode = "full" if update_backtests else "current_only"
     with connect() as con:

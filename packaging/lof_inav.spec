@@ -4,6 +4,12 @@ from pathlib import Path
 
 
 project_root = Path(SPECPATH).parent
+seed_database = project_root / "build" / "portable_seed" / "lof_inav.sqlite3"
+
+if not seed_database.is_file():
+    raise FileNotFoundError(
+        "Portable seed database is missing. Run scripts\\build_portable.ps1."
+    )
 
 
 a = Analysis(
@@ -13,6 +19,7 @@ a = Analysis(
     datas=[
         (str(project_root / "public"), "public"),
         (str(project_root / "config" / "fund_rules.json"), "config"),
+        (str(seed_database), "seed"),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -27,9 +34,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="LOF_iNAV",
     debug=False,
     bootloader_ignore_signals=False,
@@ -37,10 +43,20 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="LOF_iNAV",
 )
