@@ -55,3 +55,31 @@ Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
 
 - Phase: Mirrored the private repository's current public-safe source, fund rules, Portable packaging workflow, documentation, and tests into the sibling `LOF_iNAV_public` repository. Used the documented exclusions for `.git/`, `.venv/`, `data/`, caches, `build/`, `dist/`, `experimental/`, and `private_public_sync/`; no generated database, report PDF, build artifact, or private workflow file was transferred.
 - Verification: Confirmed both repositories were clean before synchronization; previewed the mirror with `rsync --dry-run --delete`; passed the public repository's configuration validation, all 127 offline `unittest` tests, Python compilation, frontend JavaScript syntax checking, `git diff --check`, secret-pattern scanning, private-path tracking checks, generated-file extension checks, and post-sync checksum parity for all public-safe files. Network-backed refreshes and a Windows executable build were skipped because the synchronized source changes were covered offline and the current device is macOS.
+
+## 2026-08-07 19:12:52 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Replaced the minimal Windows Portable note with a plain-language end-user guide covering preparation, complete extraction, first-run seed initialization, routine use, status meanings, correct shutdown, independent-folder upgrades, backup/removal, troubleshooting, privacy, and the valuation disclaimer. Added a double-click close command and packaged its verified PID/port-aware PowerShell helper so closing the browser is no longer the only visible user action.
+- Verification: Passed the two focused Portable guide/package contract tests, all 129 offline `unittest` tests, configuration validation, Python compilation, frontend JavaScript syntax checking, PowerShell parsing for the build and stop scripts, and `git diff --check`. A Windows x64 ZIP was not rebuilt because the current device is macOS; the actual package assembly remains gated by the existing Windows x64 build guard.
+
+## 2026-08-07 19:43:12 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Expanded the Windows Portable user guide with the project's free/open-source status and practical MIT license permissions and obligations; strengthened the no-warranty and personal investment loss disclaimer; explained the latest-published-NAV, holding/manual-proxy, weighted-return, FX, regular stock-session, and continuously traded commodity valuation model; clarified that commodity categories are thematic rather than literal holdings classifications; and documented the exact current-filter/current-sort/current-column scope and limitations of CSV and PNG exports.
+- Verification: Passed the focused Portable guide contract tests, all 129 offline `unittest` tests, configuration validation, Python compilation, frontend JavaScript syntax checking, and `git diff --check`. Network-backed refreshes and a Windows build were skipped because this phase changes user documentation and its offline contract test only.
+
+## 2026-08-13 00:52:10 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Hardened the shared provider HTTP GET and POST helpers against redirect-based blind SSRF and unbounded response consumption. Provider redirects are now rejected before any follow-up request, including body-preserving POST redirects; responses are streamed into the existing `requests.Response` interface under a 16 MiB decoded-body cap, a bounded encoded-input cap for compressed responses, and an absolute per-attempt transfer deadline capped at 30 seconds. Limit failures remain `RequestException`-compatible, close their response, and retain the existing retry behavior. Pinned the directly used urllib3 response API version.
+- Verification: Passed focused HTTP-boundary, historical-price deadline, and index-source tests; reproduced rejection of GET 302 and POST 307 redirects, gzip expansion beyond the decoded limit, a continuously delivered body beyond its deadline, and the deadline-specific exception when a real local socket read expires; confirmed successful `.content`, `.text`, and `.json()` consumers plus limit-failure retries. Passed the offline `unittest` suite, configuration validation, Python compilation, frontend JavaScript syntax checking, dependency consistency, and `git diff --check`; two pre-existing timing-threshold tests were each observed to fail intermittently by only 3-10 ms and pass on rerun, without a code-path assertion failure. The patch tool's sandbox separately could not run two unrelated server port-conflict tests because it denied loopback socket binding. Live provider calls were skipped to avoid unnecessary external requests and rate limits; the security boundary was additionally exercised against a deterministic local HTTP server.
+
+## 2026-08-13 01:07:26 Asia/Shanghai
+
+Device: TianhaodeMacBook-Pro.local (macOS 26.5.2, arm64)
+
+- Phase: Mirrored the private repository's current public-safe source, provider HTTP hardening, dependency pin, focused security tests, and previously completed Portable documentation and shutdown workflow into the sibling `LOF_iNAV_public` repository. Excluded `.git`, `.venv`, `data`, caches, `build`, `dist`, `.DS_Store`, `experimental`, and `private_public_sync`; no generated database, private workflow file, credential, or build artifact was transferred.
+- Verification: Previewed the content-based mirror before applying it and confirmed post-sync checksum parity for all public-safe files. In the public repository, passed the focused security tests, configuration validation, Python compilation, frontend JavaScript syntax checking, PowerShell parsing, dependency consistency, `git diff --check`, secret-pattern scanning, private/generated path tracking checks, and repeated deadline tests. The 136-test full suite had no functional assertion failures but two pre-existing 120 ms wall-clock threshold tests continued to fail intermittently at 129-131 ms under full-suite load and pass when repeated alone; this non-deterministic timing issue was left unchanged. Network-backed provider refreshes and a Windows executable build were skipped because the changes were covered offline and the current device is macOS.

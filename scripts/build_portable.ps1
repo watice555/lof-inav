@@ -60,10 +60,13 @@ if (Test-Path $PackageRoot) {
 }
 New-Item -ItemType Directory -Path $PackageDirectory | Out-Null
 Copy-Item -Recurse -Force "dist\LOF_iNAV\*" $PackageDirectory
-Copy-Item "packaging\PORTABLE_README.txt" $PackageDirectory
+Copy-Item "packaging\PORTABLE_README.txt" (Join-Path $PackageDirectory "使用说明.txt")
+Copy-Item "packaging\STOP_LOF_iNAV.bat" (Join-Path $PackageDirectory "关闭 LOF_iNAV.bat")
 Copy-Item "LICENSE" $PackageDirectory
 New-Item -ItemType Directory -Path (Join-Path $PackageDirectory "config") | Out-Null
 Copy-Item "config\fund_rules.json" (Join-Path $PackageDirectory "config\fund_rules.json")
+New-Item -ItemType Directory -Path (Join-Path $PackageDirectory "scripts") | Out-Null
+Copy-Item "scripts\stop_server.ps1" (Join-Path $PackageDirectory "scripts\stop_server.ps1")
 
 if (Test-Path $ArchivePath) {
     Remove-Item -Force $ArchivePath

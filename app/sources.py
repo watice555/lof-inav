@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 from requests import RequestException
 from bs4 import BeautifulSoup
+from urllib3.exceptions import DecodeError, ProtocolError, ReadTimeoutError
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from .config import EASTMONEY_HEADERS, SINA_PRICE_SYMBOLS, YAHOO_PRICE_SYMBOLS
 from .market_calendar import historical_price_market
@@ -177,66 +179,216 @@ HANG_SENG_INDEX_SERIES = {
     "124.HSTECH": ("hstech", "02083.00"),
 }
 PURCHASE_LIMIT_UNBOUNDED_SORT_VALUE = 1_000_000_000_000_000.0
+HTTP_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+HTTP_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
+HTTP_RESPONSE_TRANSFER_DEADLINE_SECONDS = 30.0
+
+
+class HttpResponseBodyTooLarge(RequestException):
+    """A provider response exceeded a body byte limit."""
+
+
+class HttpResponseTransferDeadlineExceeded(requests.Timeout):
+    """A provider response exceeded its absolute transfer deadline."""
+
+
+def _response_network_socket(response: requests.Response) -> Any | None:
+    connection = getattr(response.raw, "_connection", None)
+    network_socket = getattr(connection, "sock", None)
+    if network_socket is not None:
+        return network_socket
+    original_response = getattr(response.raw, "_fp", None)
+    buffered_reader = getattr(original_response, "fp", None)
+    raw_socket = getattr(buffered_reader, "raw", None)
+    return getattr(raw_socket, "_sock", None)
+
+
+def _raise_response_transfer_deadline(operation: str) -> None:
+    _raise_if_daily_price_deadline_exceeded(operation)
+    raise HttpResponseTransferDeadlineExceeded(
+        f"{operation} exceeded its absolute response transfer deadline"
+    )
+
+
+def _buffer_bounded_response(
+    response: requests.Response,
+    *,
+    deadline: float,
+    operation: str,
+) -> None:
+    body = io.BytesIO()
+    encoded_size = 0
+    decoded_size = 0
+    read1 = getattr(response.raw, "read1", None)
+    if read1 is None:
+        raise RequestException(
+            f"{operation} response transport does not support bounded reads",
+            response=response,
+        )
+
+    decoder = None
+    if response.headers.get("Content-Encoding"):
+        initialize_decoder = getattr(response.raw, "_init_decoder", None)
+        if initialize_decoder is None:
+            raise requests.exceptions.ContentDecodingError(
+                f"{operation} response transport cannot decode a bounded body",
+                response=response,
+            )
+        try:
+            initialize_decoder()
+        except DecodeError as exc:
+            raise requests.exceptions.ContentDecodingError(
+                exc,
+                response=response,
+            ) from exc
+        decoder = getattr(response.raw, "_decoder", None)
+    decoder_errors = (DecodeError,) + tuple(
+        getattr(response.raw, "DECODER_ERROR_CLASSES", ())
+    )
+
+    def store_decoded(chunk: bytes) -> None:
+        nonlocal decoded_size
+        decoded_size += len(chunk)
+        if decoded_size > HTTP_RESPONSE_MAX_BYTES:
+            raise HttpResponseBodyTooLarge(
+                f"{operation} decoded response exceeds "
+                f"{HTTP_RESPONSE_MAX_BYTES} bytes",
+                response=response,
+            )
+        body.write(chunk)
+
+    def decode_and_store(chunk: bytes) -> None:
+        if decoder is None:
+            store_decoded(chunk)
+            return
+        while True:
+            remaining_bytes = HTTP_RESPONSE_MAX_BYTES - decoded_size
+            decoded = decoder.decompress(chunk, max_length=remaining_bytes + 1)
+            store_decoded(decoded)
+            if not decoder.has_unconsumed_tail or not decoded:
+                return
+            chunk = b""
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _raise_response_transfer_deadline(operation)
+        network_socket = _response_network_socket(response)
+        if network_socket is not None:
+            network_socket.settimeout(remaining)
+        try:
+            chunk = read1(
+                HTTP_RESPONSE_READ_CHUNK_BYTES,
+                decode_content=False,
+            )
+            if time.monotonic() >= deadline:
+                _raise_response_transfer_deadline(operation)
+            if not chunk:
+                if decoder is not None:
+                    decode_and_store(b"")
+                    store_decoded(decoder.flush())
+                break
+            encoded_size += len(chunk)
+            if decoder is not None and encoded_size > HTTP_RESPONSE_MAX_BYTES * 2:
+                raise HttpResponseBodyTooLarge(
+                    f"{operation} encoded response exceeds "
+                    f"{HTTP_RESPONSE_MAX_BYTES * 2} bytes",
+                    response=response,
+                )
+            decode_and_store(chunk)
+        except RequestException:
+            raise
+        except decoder_errors as exc:
+            raise requests.exceptions.ContentDecodingError(
+                exc,
+                response=response,
+            ) from exc
+        except ProtocolError as exc:
+            raise requests.exceptions.ChunkedEncodingError(
+                exc,
+                response=response,
+            ) from exc
+        except ReadTimeoutError as exc:
+            if time.monotonic() >= deadline:
+                _raise_response_transfer_deadline(operation)
+            raise requests.ConnectionError(exc, response=response) from exc
+        except Urllib3SSLError as exc:
+            raise requests.exceptions.SSLError(exc, response=response) from exc
+
+        if time.monotonic() >= deadline:
+            _raise_response_transfer_deadline(operation)
+
+    response._content = body.getvalue()
+    response._content_consumed = True
+
+
+def _request_with_limits(
+    request: Callable[..., requests.Response],
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> requests.Response:
+    headers = dict(EASTMONEY_HEADERS)
+    headers.update(kwargs.pop("headers", {}))
+    timeout = kwargs.pop("timeout", 20)
+    attempts = kwargs.pop("attempts", 3)
+    kwargs.pop("allow_redirects", None)
+    kwargs.pop("stream", None)
+    last_error: RequestException | None = None
+    operation = f"{method} {url}"
+    for attempt in range(attempts):
+        _raise_if_daily_price_deadline_exceeded(operation)
+        response: requests.Response | None = None
+        try:
+            attempt_timeout = _request_timeout_within_deadline(
+                min(float(timeout), HTTP_RESPONSE_TRANSFER_DEADLINE_SECONDS)
+            )
+            transfer_deadline = time.monotonic() + attempt_timeout
+            response = request(
+                url,
+                headers=headers,
+                timeout=attempt_timeout,
+                allow_redirects=False,
+                stream=True,
+                **kwargs,
+            )
+            if response.is_redirect:
+                raise requests.TooManyRedirects(
+                    f"{operation} redirect responses are not permitted",
+                    response=response,
+                )
+            _buffer_bounded_response(
+                response,
+                deadline=transfer_deadline,
+                operation=operation,
+            )
+            response.raise_for_status()
+            _raise_if_daily_price_deadline_exceeded(operation)
+            return response
+        except DailyPriceDeadlineExceeded:
+            if response is not None:
+                response.close()
+            raise
+        except RequestException as exc:
+            if response is not None:
+                response.close()
+            last_error = exc
+            if attempt + 1 < attempts:
+                _sleep_within_daily_price_deadline(
+                    0.5 * (attempt + 1),
+                    operation,
+                )
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"request failed: {url}")
 
 
 def _get(url: str, **kwargs: Any) -> requests.Response:
-    headers = dict(EASTMONEY_HEADERS)
-    headers.update(kwargs.pop("headers", {}))
-    timeout = kwargs.pop("timeout", 20)
-    attempts = kwargs.pop("attempts", 3)
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        _raise_if_daily_price_deadline_exceeded(f"GET {url}")
-        try:
-            response = requests.get(
-                url,
-                headers=headers,
-                timeout=_request_timeout_within_deadline(timeout),
-                **kwargs,
-            )
-            response.raise_for_status()
-            _raise_if_daily_price_deadline_exceeded(f"GET {url}")
-            return response
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt + 1 < attempts:
-                _sleep_within_daily_price_deadline(
-                    0.5 * (attempt + 1),
-                    f"GET {url}",
-                )
-    if last_error:
-        raise last_error
-    raise RuntimeError(f"request failed: {url}")
+    return _request_with_limits(requests.get, "GET", url, **kwargs)
 
 
 def _post(url: str, **kwargs: Any) -> requests.Response:
-    headers = dict(EASTMONEY_HEADERS)
-    headers.update(kwargs.pop("headers", {}))
-    timeout = kwargs.pop("timeout", 20)
-    attempts = kwargs.pop("attempts", 3)
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        _raise_if_daily_price_deadline_exceeded(f"POST {url}")
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                timeout=_request_timeout_within_deadline(timeout),
-                **kwargs,
-            )
-            response.raise_for_status()
-            _raise_if_daily_price_deadline_exceeded(f"POST {url}")
-            return response
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt + 1 < attempts:
-                _sleep_within_daily_price_deadline(
-                    0.5 * (attempt + 1),
-                    f"POST {url}",
-                )
-    if last_error:
-        raise last_error
-    raise RuntimeError(f"request failed: {url}")
+    return _request_with_limits(requests.post, "POST", url, **kwargs)
 
 
 def _extract_var(script: str, name: str) -> str | None:
