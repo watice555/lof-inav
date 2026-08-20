@@ -6,13 +6,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PortableUserGuideTests(unittest.TestCase):
-    def test_package_includes_user_guide_and_close_command(self) -> None:
+    def test_package_uses_powershell_5_safe_unicode_names(self) -> None:
         build_script = (PROJECT_ROOT / "scripts" / "build_portable.ps1").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('"使用说明.txt"', build_script)
-        self.assertIn('"关闭 LOF_iNAV.bat"', build_script)
+        self.assertIn("0x4F7F, 0x7528, 0x8BF4, 0x660E", build_script)
+        self.assertIn("0x5173, 0x95ED", build_script)
+        self.assertIn("Join-Path $PackageDirectory $PortableReadmeName", build_script)
+        self.assertIn("Join-Path $PackageDirectory $StopCommandName", build_script)
+        self.assertNotIn('"使用说明.txt"', build_script)
+        self.assertNotIn('"关闭 LOF_iNAV.bat"', build_script)
         self.assertIn('"scripts\\stop_server.ps1"', build_script)
         self.assertTrue((PROJECT_ROOT / "packaging" / "PORTABLE_README.txt").is_file())
         self.assertTrue((PROJECT_ROOT / "packaging" / "STOP_LOF_iNAV.bat").is_file())

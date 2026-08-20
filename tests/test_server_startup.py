@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import socket
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app import server
 
@@ -29,6 +29,39 @@ def fake_backtest_connection():
 
 
 class ServerStartupTests(unittest.TestCase):
+    def test_handler_access_logging_does_not_require_stderr(self) -> None:
+        handler = object.__new__(server.Handler)
+        handler.client_address = ("127.0.0.1", 12345)
+
+        with (
+            patch("app.server.sys.stderr", None),
+            patch("app.server.LOGGER.info") as logger_info,
+        ):
+            handler.log_message('"%s" %s %s', "GET / HTTP/1.1", "200", "123")
+
+        logger_info.assert_called_once_with(
+            "%s - %s",
+            "127.0.0.1",
+            '"GET / HTTP/1.1" 200 123',
+        )
+
+    def test_windowed_logging_skips_missing_stderr(self) -> None:
+        file_handler = Mock()
+        root_logger = Mock()
+        with (
+            patch.object(server.configure_logging, "_configured", False, create=True),
+            patch("app.server.LOG_PATH") as log_path,
+            patch("app.server.sys.stderr", None),
+            patch("app.server.RotatingFileHandler", return_value=file_handler),
+            patch("app.server.logging.StreamHandler") as stream_handler,
+            patch("app.server.logging.getLogger", return_value=root_logger),
+        ):
+            log_path.parent.mkdir = Mock()
+            server.configure_logging()
+
+        stream_handler.assert_not_called()
+        root_logger.addHandler.assert_called_once_with(file_handler)
+
     def test_browser_is_opened_with_the_port_that_was_actually_bound(self) -> None:
         class FakeHTTPServer:
             server_address = ("127.0.0.1", 8001)

@@ -54,14 +54,16 @@ $PackageName = "LOF_iNAV-Portable-$Version-win-x64"
 $PackageRoot = Join-Path $ProjectRoot "build\portable_package"
 $PackageDirectory = Join-Path $PackageRoot $PackageName
 $ArchivePath = Join-Path $ProjectRoot "dist\$PackageName.zip"
+$PortableReadmeName = ([char[]]@(0x4F7F, 0x7528, 0x8BF4, 0x660E) -join "") + ".txt"
+$StopCommandName = ([char[]]@(0x5173, 0x95ED) -join "") + " LOF_iNAV.bat"
 
 if (Test-Path $PackageRoot) {
     Remove-Item -Recurse -Force $PackageRoot
 }
 New-Item -ItemType Directory -Path $PackageDirectory | Out-Null
 Copy-Item -Recurse -Force "dist\LOF_iNAV\*" $PackageDirectory
-Copy-Item "packaging\PORTABLE_README.txt" (Join-Path $PackageDirectory "使用说明.txt")
-Copy-Item "packaging\STOP_LOF_iNAV.bat" (Join-Path $PackageDirectory "关闭 LOF_iNAV.bat")
+Copy-Item "packaging\PORTABLE_README.txt" (Join-Path $PackageDirectory $PortableReadmeName)
+Copy-Item "packaging\STOP_LOF_iNAV.bat" (Join-Path $PackageDirectory $StopCommandName)
 Copy-Item "LICENSE" $PackageDirectory
 New-Item -ItemType Directory -Path (Join-Path $PackageDirectory "config") | Out-Null
 Copy-Item "config\fund_rules.json" (Join-Path $PackageDirectory "config\fund_rules.json")
