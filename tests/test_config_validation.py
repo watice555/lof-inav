@@ -36,6 +36,22 @@ class ConfigValidationTests(unittest.TestCase):
     def test_valid_manual_config_passes(self) -> None:
         self.assertEqual(self.validate(valid_fund()), [])
 
+    def test_archived_fund_requires_a_rule_and_valid_delisting_date(self) -> None:
+        rules = {
+            "funds": {"000001": valid_fund(), "000002": valid_fund()},
+            "archived_funds": {"000002": "2026-10-28"},
+        }
+        self.assertEqual(validate_rules(rules), [])
+
+        rules["archived_funds"] = {"000002": "2026-02-30", "000003": "2026-10-28"}
+        self.assertEqual(
+            validate_rules(rules),
+            [
+                "archived_funds.000002: delisting date must be YYYY-MM-DD",
+                "archived_funds.000003: fund rule is missing",
+            ],
+        )
+
     def test_boolean_market_is_not_accepted_as_integer(self) -> None:
         errors = self.validate(valid_fund(exchange_market=True))
         self.assertTrue(any("exchange_market" in error for error in errors))

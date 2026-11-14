@@ -42,6 +42,18 @@ class RefreshCoordinationTests(unittest.TestCase):
         self.assertTrue(refresh_cooldown_active(20, 60, now=30))
         self.assertFalse(refresh_cooldown_active(20, 60, now=80))
 
+    def test_forced_refresh_does_not_claim_an_existing_job_as_its_own(self) -> None:
+        server._quote_refresh_lock.acquire()
+        server._nav_refresh_lock.acquire()
+        try:
+            self.assertTrue(server.schedule_quote_refresh(["0.A"]))
+            self.assertFalse(server.schedule_quote_refresh(["0.A"], force=True))
+            self.assertTrue(server.schedule_nav_refresh())
+            self.assertFalse(server.schedule_nav_refresh(force=True))
+        finally:
+            server._nav_refresh_lock.release()
+            server._quote_refresh_lock.release()
+
     def test_quote_refresh_keeps_live_quotes_fresh_and_backs_off_missing_ones(self) -> None:
         con = sqlite3.connect(":memory:")
         con.row_factory = sqlite3.Row
@@ -213,10 +225,16 @@ class RefreshCoordinationTests(unittest.TestCase):
             REPORT_RETRY_INTERVAL_SECONDS,
         )
         set_meta(con, "last_reports_refresh_stats", {"failed_count": 0})
-        set_meta(con, "pending_report_backtests", {"A": "2026-07-20"})
+        with patch.dict("app.server.FUNDS", {"A": FundConfig("A", 0)}, clear=True):
+            set_meta(con, "pending_report_backtests", {"A": "2026-07-20"})
+            self.assertEqual(
+                report_refresh_interval_seconds(con),
+                REPORT_RETRY_INTERVAL_SECONDS,
+            )
+
         self.assertEqual(
             report_refresh_interval_seconds(con),
-            REPORT_RETRY_INTERVAL_SECONDS,
+            REPORT_REFRESH_INTERVAL_SECONDS,
         )
 
     def test_report_nav_and_manual_backtest_schedulers_are_mutually_exclusive(self) -> None:
@@ -234,6 +252,19 @@ class RefreshCoordinationTests(unittest.TestCase):
             self.assertIn("持仓检查", message)
         finally:
             server._report_refresh_lock.release()
+
+    def test_backtest_scheduler_releases_local_locks_when_shared_lease_is_busy(self) -> None:
+        with (
+            patch("app.server.try_claim_backtest_refresh_lease", return_value=False),
+            patch("app.server.threading.Thread") as thread,
+        ):
+            started, message = server.schedule_incremental_backtest_refresh()
+
+        self.assertFalse(started)
+        self.assertIn("另一服务", message)
+        self.assertFalse(server._nav_refresh_lock.locked())
+        self.assertFalse(server._backtest_refresh_lock.locked())
+        thread.assert_not_called()
 
 
 if __name__ == "__main__":

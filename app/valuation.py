@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import pstdev
 from typing import Any
 
+from .backtest_state import resolve_backtest_dirty
 from .config import FUNDS, FX_MIDPOINT_SECIDS, FX_SECID_OVERRIDES, US_EQUITY_CLOSE_MARKS
 from .market_calendar import (
     expected_market_closure_gap,
@@ -262,10 +263,26 @@ def estimate_intraday(
         con, holdings, latest_nav_date, prefetch=prefetch
     )
     estimate = latest_nav["nav"] * (1 + weighted_return) if latest_nav else None
-    trade_price = quote["price"] if quote and realtime_quote_is_usable(quote, trade_secid) else None
+    quote_status = trade_quote_status(quote, trade_secid)
+    trade_price = quote["price"] if quote_status == "traded" else None
     if trade_price is not None and trade_price <= 0:
         trade_price = None
     premium = trade_price / estimate - 1 if estimate and trade_price else None
+    order_book = None
+    if quote_status in {"traded", "no_trade", "book_only"} and (
+        _row_value(quote, "bid_price") or _row_value(quote, "ask_price")
+    ):
+        order_book = {
+            "bid_price": _row_value(quote, "bid_price"),
+            "bid_volume": _row_value(quote, "bid_volume"),
+            "ask_price": _row_value(quote, "ask_price"),
+            "ask_volume": _row_value(quote, "ask_volume"),
+            "quote_time": quote["quote_time"],
+        }
+    premium_nav = _positive_float(estimate)
+    ask_price = _positive_float(order_book["ask_price"]) if order_book else None
+    bid_price = _positive_float(order_book["bid_price"]) if order_book else None
+    smart_premium, smart_premium_status = smart_premium_signal(order_book, estimate, quote_status)
     return {
         "code": code,
         "name": fund["name"],
@@ -275,8 +292,16 @@ def estimate_intraday(
         "nav_date": latest_nav["date"] if latest_nav else None,
         "trade_price": trade_price,
         "trade_pct": quote["pct"] if trade_price is not None else None,
+        "quote_status": quote_status,
+        "order_book": order_book,
         "estimated_nav": estimate,
         "premium": premium,
+        # Active buying crosses the ask; active selling crosses the bid.
+        # These indicative one-level premiums exclude fees and price impact.
+        "buy_premium": ask_price / premium_nav - 1 if ask_price and premium_nav else None,
+        "sell_premium": bid_price / premium_nav - 1 if bid_price and premium_nav else None,
+        "smart_premium": smart_premium,
+        "smart_premium_status": smart_premium_status,
         "covered_weight": priced_weight,
         "modeled_weight": modeled_weight,
         "priced_weight": priced_weight,
@@ -291,6 +316,30 @@ def estimate_intraday(
         "announcement": dict(announcement) if announcement else None,
         "purchase_limit": dict(purchase_limit) if purchase_limit else None,
     }
+
+
+def smart_premium_signal(
+    order_book: dict[str, Any] | None, estimated_nav: float | None, quote_status: str
+) -> tuple[float | None, str]:
+    """Select a buy discount or sell premium without treating missing data as no opportunity."""
+    if quote_status in {"missing", "fetch_failed", "stale"}:
+        return None, quote_status
+    nav = _positive_float(estimated_nav)
+    if nav is None:
+        return None, "estimate_missing"
+    if not order_book:
+        return None, "book_missing"
+    bid = _positive_float(order_book.get("bid_price"))
+    ask = _positive_float(order_book.get("ask_price"))
+    if bid is not None and ask is not None and bid > ask:
+        return None, "book_invalid"
+    if bid is not None and bid > nav:
+        return bid / nav - 1, "sell_premium"
+    if ask is not None and ask < nav:
+        return ask / nav - 1, "buy_discount"
+    if bid is not None and ask is not None:
+        return 0.0, "none"
+    return None, "book_incomplete"
 
 
 def latest_holdings(con: sqlite3.Connection, code: str) -> list[sqlite3.Row]:
@@ -432,6 +481,13 @@ def realtime_quote_return_with_warning(
     cache_warning = realtime_quote_cache_warning(quote, secid)
     if cache_warning:
         return None, cache_warning
+    if _row_value(quote, "trade_status") in {"no_trade", "book_only"}:
+        return None, {
+            "type": "quote_trade_unavailable",
+            "secid": secid,
+            "quote_time": quote["quote_time"],
+            "message": "行情有盘口但没有可用成交价",
+        }
     price = _positive_float(quote["price"])
     previous_close = _positive_float(quote["previous_close"])
     fallback_return, fallback_source = _quote_pct_return_with_source(price, previous_close, quote["pct"])
@@ -575,6 +631,21 @@ def _positive_float(value: Any) -> float | None:
     return None
 
 
+def trade_quote_status(
+    quote: sqlite3.Row | dict[str, Any] | None, secid: str, now: datetime | None = None
+) -> str:
+    """Keep provider availability, cache freshness and trade state distinct."""
+    if quote is None:
+        return "missing"
+    warning = realtime_quote_cache_warning(quote, secid, now=now)
+    if warning:
+        return "fetch_failed" if warning["type"] == "quote_refresh_missing" else "stale"
+    status = _row_value(quote, "trade_status")
+    if status in {"no_trade", "book_only"}:
+        return status
+    return "traded" if _positive_float(quote["price"]) is not None else "missing"
+
+
 def realtime_quote_is_usable(
     quote: sqlite3.Row | dict[str, Any], secid: str, now: datetime | None = None
 ) -> bool:
@@ -672,14 +743,31 @@ def run_backtest(
     navs = con.execute(
         "select * from navs where fund_code = ? order by date asc", (code,)
     ).fetchall()
+    processed_through = navs[-1]["date"] if navs else None
     if len(navs) < 2:
-        replace_backtest_rows_atomic(con, code, [], start_date=None)
+        replace_backtest_rows_atomic(
+            con,
+            code,
+            [],
+            start_date=None,
+            full_replace=True,
+            processed_from=navs[0]["date"] if navs else None,
+            processed_through=processed_through,
+        )
         return []
 
     recent = navs[-days - 1 :]
     needed_secids = backtest_secids_for_nav_pairs(con, code, recent, None, lag_days)
     if not needed_secids:
-        replace_backtest_rows_atomic(con, code, [], start_date=None)
+        replace_backtest_rows_atomic(
+            con,
+            code,
+            [],
+            start_date=None,
+            full_replace=True,
+            processed_from=recent[0]["date"] if recent else None,
+            processed_through=processed_through,
+        )
         return []
     price_cache = {secid: _backtest_price_series(con, secid) for secid in needed_secids}
     results = []
@@ -688,7 +776,15 @@ def run_backtest(
         if not row:
             continue
         results.append(row)
-    replace_backtest_rows_atomic(con, code, results, start_date=None)
+    replace_backtest_rows_atomic(
+        con,
+        code,
+        results,
+        start_date=None,
+        full_replace=True,
+        processed_from=recent[0]["date"] if recent else None,
+        processed_through=processed_through,
+    )
     return results
 
 
@@ -711,18 +807,40 @@ def run_backtest_incremental(
             """
             select * from navs
             where fund_code = ?
-              and date >= (
-                select max(date) from navs where fund_code = ? and date <= ?
+              and date >= coalesce(
+                (select max(date) from navs where fund_code = ? and date <= ?),
+                (select min(date) from navs where fund_code = ?)
               )
             order by date asc
             """,
-            (code, code, anchor_date),
+            (code, code, anchor_date, code),
         ).fetchall()
     else:
         navs = con.execute(
             "select * from navs where fund_code = ? order by date asc", (code,)
         ).fetchall()
+    processed_through = navs[-1]["date"] if navs else None
+    if start_date:
+        processed_from = start_date
+    else:
+        processed_from = next(
+            (
+                row["date"]
+                for row in navs[1:]
+                if not start_after or row["date"] > start_after
+            ),
+            None,
+        )
     if len(navs) < 2:
+        replace_backtest_rows_atomic(
+            con,
+            code,
+            [],
+            start_date=start_date,
+            full_replace=False,
+            processed_from=processed_from,
+            processed_through=processed_through,
+        )
         return []
 
     needed_secids = backtest_secids_for_nav_pairs(
@@ -734,11 +852,15 @@ def run_backtest_incremental(
         start_date=start_date,
     )
     if not needed_secids:
-        if start_date:
-            con.execute(
-                "delete from backtests where fund_code = ? and date >= ?",
-                (code, start_date),
-            )
+        replace_backtest_rows_atomic(
+            con,
+            code,
+            [],
+            start_date=start_date,
+            full_replace=False,
+            processed_from=processed_from,
+            processed_through=processed_through,
+        )
         return []
     price_cache = {secid: _backtest_price_series(con, secid) for secid in needed_secids}
     results = []
@@ -751,7 +873,15 @@ def run_backtest_incremental(
         if not row:
             continue
         results.append(row)
-    replace_backtest_rows_atomic(con, code, results, start_date=start_date)
+    replace_backtest_rows_atomic(
+        con,
+        code,
+        results,
+        start_date=start_date,
+        full_replace=False,
+        processed_from=processed_from,
+        processed_through=processed_through,
+    )
     return results
 
 
@@ -760,18 +890,32 @@ def replace_backtest_rows_atomic(
     code: str,
     rows: list[dict[str, Any]],
     start_date: str | None,
+    *,
+    full_replace: bool | None = None,
+    processed_from: str | None = None,
+    processed_through: str | None = None,
 ) -> None:
+    if full_replace is None:
+        full_replace = start_date is None
+    delete_from = start_date or processed_from
     con.execute("savepoint replace_backtest_window")
     try:
-        if start_date:
+        if full_replace:
+            con.execute("delete from backtests where fund_code = ?", (code,))
+        elif delete_from:
             con.execute(
                 "delete from backtests where fund_code = ? and date >= ?",
-                (code, start_date),
+                (code, delete_from),
             )
-        else:
-            con.execute("delete from backtests where fund_code = ?", (code,))
         for row in rows:
             save_backtest_row(con, row)
+        resolve_backtest_dirty(
+            con,
+            code,
+            full_replace=full_replace,
+            processed_from=processed_from,
+            processed_through=processed_through,
+        )
     except Exception:
         con.execute("rollback to replace_backtest_window")
         con.execute("release replace_backtest_window")

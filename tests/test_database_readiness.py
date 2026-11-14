@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import unittest
 from pathlib import Path
@@ -7,10 +8,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.build import prepare_build
-from app.config import FundConfig
+from app.config import FundConfig, load_funds
 from app.db import (
     SCHEMA,
     SCHEMA_VERSION,
+    current_config_hash,
     database_readiness,
     ensure_config_state,
     get_meta,
@@ -88,6 +90,41 @@ class DatabaseReadinessTests(unittest.TestCase):
         self.assertEqual(get_meta(con, "build_state"), "config_changed")
         self.assertEqual(get_meta(con, "pending_config_hash"), "new")
 
+    def test_archiving_preserves_database_readiness_and_historical_backtests(self) -> None:
+        con = make_connection()
+        for code in ("160001", "160002"):
+            seed_core(con, code)
+            con.execute(
+                """
+                insert into backtests
+                (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
+                 error_pct, covered_weight)
+                values (?, '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1)
+                """,
+                (code,),
+            )
+        rules = {
+            "funds": {code: {"exchange_market": 0} for code in ("160001", "160002")},
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "fund_rules.json"
+            path.write_text(json.dumps(rules), encoding="utf-8")
+            with patch("app.db.FUND_RULES_PATH", path):
+                set_meta(con, "config_hash", current_config_hash())
+                set_meta(con, "build_state", "complete")
+                rules["archived_funds"] = {"160002": "2026-10-28"}
+                path.write_text(json.dumps(rules), encoding="utf-8")
+                active_funds = load_funds(path)
+                self.assertEqual(list(active_funds), ["160001"])
+                with patch("app.db.FUNDS", active_funds):
+                    ensure_config_state(con)
+                    self.assertTrue(database_readiness(con, require_backtests=True)["ready"])
+
+        self.assertEqual(
+            [row["fund_code"] for row in con.execute("select fund_code from backtests order by 1")],
+            ["160001", "160002"],
+        )
+
     def test_current_only_build_discards_incompatible_backtests(self) -> None:
         con = make_connection()
         con.execute(
@@ -98,11 +135,17 @@ class DatabaseReadinessTests(unittest.TestCase):
             values ('A', '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1, 'ok')
             """
         )
+        set_meta(con, "backtest_dirty_from_by_code", {"A": "2026-07-01"})
+        set_meta(con, "backtest_rebuild_required", {"target_count": 1})
+        set_meta(con, "last_incremental_backtests_refresh_at", "old")
 
         prepare_build(con, "current_only", False, "start")
 
         self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 0)
         self.assertTrue(get_meta(con, "backtests_disabled"))
+        self.assertIsNone(get_meta(con, "backtest_dirty_from_by_code"))
+        self.assertIsNone(get_meta(con, "backtest_rebuild_required"))
+        self.assertIsNone(get_meta(con, "last_incremental_backtests_refresh_at"))
 
     def test_core_complete_current_only_cache_is_ready(self) -> None:
         con = make_connection()

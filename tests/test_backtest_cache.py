@@ -5,12 +5,25 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from app.backtest_state import (
+    BACKTEST_REBUILD_REQUIRED_META_KEY,
+    load_backtest_dirty,
+    mark_backtest_dirty,
+    resolve_backtest_dirty,
+)
 from app.build import (
     incremental_backtest_cutoff_for_fund,
     incremental_backtest_price_targets_for_fund,
 )
 from app.config import FundConfig
-from app.db import BACKTEST_CACHE_VERSION, SCHEMA, ensure_cache_versions, get_meta, set_meta
+from app.db import (
+    BACKTEST_CACHE_VERSION,
+    HISTORICAL_PRICE_CACHE_VERSION,
+    SCHEMA,
+    ensure_cache_versions,
+    get_meta,
+    set_meta,
+)
 from app.valuation import (
     DEFAULT_BACKTEST_DAYS,
     _backtest_price_series,
@@ -150,6 +163,109 @@ class BacktestCacheTests(unittest.TestCase):
         self.assertAlmostEqual(stored["estimated_nav"], 1.02)
         self.assertAlmostEqual(stored["error_pct"], 0.0)
 
+    def test_full_backtest_clears_covered_dirty_state(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-09")
+
+        rows = run_backtest(con, "TEST")
+
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("TEST", load_backtest_dirty(con))
+
+    def test_full_backtest_clears_dirty_state_before_retained_window(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-08")
+
+        rows = run_backtest(con, "TEST", days=1)
+
+        self.assertEqual([row["date"] for row in rows], ["2026-07-10"])
+        self.assertNotIn("TEST", load_backtest_dirty(con))
+
+    def test_full_backtest_preserves_dirty_state_after_latest_nav(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-11")
+
+        run_backtest(con, "TEST")
+
+        self.assertEqual(load_backtest_dirty(con)["TEST"], "2026-07-11")
+
+    def test_incremental_backtest_clears_fully_covered_dirty_state(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-09")
+
+        rows = run_backtest_incremental(con, "TEST", start_date="2026-07-09")
+
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("TEST", load_backtest_dirty(con))
+
+    def test_incremental_backtest_preserves_dirty_state_before_window(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-09")
+
+        rows = run_backtest_incremental(con, "TEST", start_date="2026-07-10")
+
+        self.assertEqual([row["date"] for row in rows], ["2026-07-10"])
+        self.assertEqual(load_backtest_dirty(con)["TEST"], "2026-07-09")
+
+    def test_dirty_resolution_failure_rolls_back_rows_and_dirty_state(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+        con.executemany(
+            "insert into daily_prices(secid, date, close, pct) values ('0.ASSET', ?, ?, null)",
+            [("2026-07-08", 100), ("2026-07-09", 101), ("2026-07-10", 102)],
+        )
+        con.execute(
+            """
+            insert into backtests
+            (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
+             error_pct, covered_weight, data_quality)
+            values ('TEST', '2026-07-10', '2026-07-09', 1.01, 1.02, 777, 700, 1, 'ok')
+            """
+        )
+        mark_backtest_dirty(con, "TEST", "2026-07-10")
+
+        def fail_after_resolution(connection, code, **coverage):
+            resolve_backtest_dirty(connection, code, **coverage)
+            raise sqlite3.OperationalError("simulated resolution failure")
+
+        with patch(
+            "app.valuation.resolve_backtest_dirty",
+            side_effect=fail_after_resolution,
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                run_backtest_incremental(con, "TEST", start_date="2026-07-10")
+
+        stored = con.execute(
+            "select estimated_nav from backtests where fund_code='TEST' and date='2026-07-10'"
+        ).fetchone()
+        self.assertEqual(stored["estimated_nav"], 777)
+        self.assertEqual(load_backtest_dirty(con)["TEST"], "2026-07-10")
+
     def test_price_targets_include_existing_overlap(self) -> None:
         con = make_connection()
         seed_fund(con)
@@ -165,6 +281,18 @@ class BacktestCacheTests(unittest.TestCase):
         with patch.dict("app.build.FUNDS", {"TEST": FundConfig("TEST", 0)}):
             targets = incremental_backtest_price_targets_for_fund(
                 con, "TEST", start_date="2026-07-09"
+            )
+
+        self.assertEqual(targets["0.ASSET"], {"2026-07-08", "2026-07-09", "2026-07-10"})
+        self.assertEqual(targets["0.TEST"], {"2026-07-09", "2026-07-10"})
+
+    def test_price_targets_fall_back_to_first_nav_before_series(self) -> None:
+        con = make_connection()
+        seed_fund(con)
+
+        with patch.dict("app.build.FUNDS", {"TEST": FundConfig("TEST", 0)}):
+            targets = incremental_backtest_price_targets_for_fund(
+                con, "TEST", start_date="2026-07-01"
             )
 
         self.assertEqual(targets["0.ASSET"], {"2026-07-08", "2026-07-09", "2026-07-10"})
@@ -272,12 +400,27 @@ class BacktestCacheTests(unittest.TestCase):
             values ('TEST', '2026-07-09', '2026-07-08', 1, 1.01, 999, 988, 1, 'ok')
             """
         )
-        set_meta(con, "backtest_cache_version", 1)
+        set_meta(con, "backtest_cache_version", BACKTEST_CACHE_VERSION - 1)
+        set_meta(con, "historical_price_cache_version", HISTORICAL_PRICE_CACHE_VERSION)
+        set_meta(con, "last_incremental_backtests_refresh_at", "2026-07-10T08:00:00+00:00")
 
-        ensure_cache_versions(con)
+        with patch.dict(
+            "app.db.FUNDS",
+            {"TEST": FundConfig("TEST", 0)},
+            clear=True,
+        ):
+            ensure_cache_versions(con)
 
         self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 0)
         self.assertEqual(get_meta(con, "backtest_cache_version"), BACKTEST_CACHE_VERSION)
+        self.assertEqual(load_backtest_dirty(con), {"TEST": "2026-07-03"})
+        rebuild = get_meta(con, BACKTEST_REBUILD_REQUIRED_META_KEY)
+        self.assertEqual(rebuild["target_count"], 1)
+        self.assertEqual(
+            rebuild["version_changes"]["backtest_cache_version"],
+            {"from": BACKTEST_CACHE_VERSION - 1, "to": BACKTEST_CACHE_VERSION},
+        )
+        self.assertIsNone(get_meta(con, "last_incremental_backtests_refresh_at"))
 
 
 if __name__ == "__main__":

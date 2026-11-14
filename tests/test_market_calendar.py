@@ -5,6 +5,7 @@ from datetime import date
 
 from app.market_calendar import (
     calendar_year_is_known,
+    calendar_year_is_provisional,
     is_trading_session,
     previous_trading_session,
 )
@@ -20,18 +21,38 @@ class MarketCalendarTests(unittest.TestCase):
         )
         self.assertTrue(calendar_year_is_known("CN", 2024))
         self.assertTrue(calendar_year_is_known("CN", 2026))
-        self.assertFalse(calendar_year_is_known("CN", 2027))
 
     def test_official_hk_calendars_include_2024_through_2027(self) -> None:
         self.assertFalse(is_trading_session("HK", date(2024, 9, 18)))
         self.assertFalse(is_trading_session("HK", date(2025, 10, 29)))
         self.assertFalse(is_trading_session("HK", date(2027, 2, 8)))
         self.assertTrue(calendar_year_is_known("HK", 2027))
+        self.assertFalse(calendar_year_is_provisional("HK", 2027))
+
+    def test_preliminary_2027_cn_calendar_covers_expected_closures(self) -> None:
+        self.assertTrue(calendar_year_is_known("CN", 2027))
+        self.assertTrue(calendar_year_is_provisional("CN", 2027))
+        self.assertFalse(is_trading_session("CN", date(2027, 1, 1)))
+        self.assertFalse(is_trading_session("CN", date(2027, 2, 5)))
+        self.assertFalse(is_trading_session("CN", date(2027, 2, 12)))
+        self.assertEqual(
+            previous_trading_session("CN", date(2027, 2, 15)),
+            date(2027, 2, 4),
+        )
+        self.assertFalse(is_trading_session("CN", date(2027, 4, 5)))
+        self.assertFalse(is_trading_session("CN", date(2027, 5, 5)))
+        self.assertFalse(is_trading_session("CN", date(2027, 6, 9)))
+        self.assertTrue(is_trading_session("CN", date(2027, 6, 10)))
+        self.assertFalse(is_trading_session("CN", date(2027, 9, 15)))
+        self.assertTrue(is_trading_session("CN", date(2027, 9, 16)))
+        self.assertFalse(is_trading_session("CN", date(2027, 10, 7)))
+        self.assertTrue(is_trading_session("CN", date(2027, 10, 8)))
 
     def test_unknown_cn_year_remains_conservative(self) -> None:
         # Do not invent a future closure: treating an unknown weekday as open
         # prevents stale prices from being silently accepted as holiday data.
-        self.assertTrue(is_trading_session("CN", date(2027, 2, 8)))
+        self.assertFalse(calendar_year_is_known("CN", 2028))
+        self.assertTrue(is_trading_session("CN", date(2028, 1, 3)))
 
     def test_2026_cn_spring_festival_includes_february_23(self) -> None:
         self.assertFalse(is_trading_session("CN", date(2026, 2, 23)))

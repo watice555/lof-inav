@@ -5,9 +5,18 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from app.build import import_fund_data, upsert_nav_rows
+from app.backtest_state import (
+    invalidate_backtests,
+    load_backtest_dirty,
+    mark_backtest_dirty,
+)
+from app.build import (
+    earliest_backtest_affected_by_holdings,
+    import_fund_data,
+    upsert_nav_rows,
+)
 from app.config import FundConfig
-from app.db import SCHEMA, get_meta
+from app.db import SCHEMA
 
 
 def make_connection() -> sqlite3.Connection:
@@ -118,15 +127,20 @@ class FundSnapshotTests(unittest.TestCase):
     def test_success_replaces_snapshot_after_all_fetches(self) -> None:
         con = make_connection()
         seed_old_snapshot(con)
+        con.execute(
+            """
+            insert into backtests
+            (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
+             error_pct, covered_weight, data_quality)
+            values ('TEST', '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1, 'ok')
+            """
+        )
+        con.commit()
         contexts = self.mocked_sources(con)
         with ExitStack() as stack:
             for context in contexts:
                 stack.enter_context(context)
-            secids = import_fund_data(
-                con,
-                "TEST",
-                pending_backtest_from="2026-07-20",
-            )
+            secids = import_fund_data(con, "TEST")
 
         self.assertEqual(con.execute("select name from funds where code='TEST'").fetchone()[0], "New Fund")
         self.assertEqual(con.execute("select count(*) from navs where fund_code='TEST'").fetchone()[0], 2)
@@ -136,9 +150,218 @@ class FundSnapshotTests(unittest.TestCase):
             "new-id",
         )
         self.assertEqual(secids, {"0.TEST", "0.NEW"})
+        self.assertEqual(load_backtest_dirty(con), {"TEST": "2026-07-10"})
+        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 0)
+
+    def test_unchanged_snapshot_preserves_existing_dirty_anchor(self) -> None:
+        con = make_connection()
+        seed_old_snapshot(con)
+        mark_backtest_dirty(con, "TEST", "2026-07-01")
+        unchanged_cfg = FundConfig(
+            code="TEST",
+            exchange_market=0,
+            manual_holdings_mode="replace",
+            manual_holdings=(
+                {
+                    "report_date": "2026-03-31",
+                    "holdings": [
+                        {
+                            "secid": "0.OLD",
+                            "name": "Old",
+                            "weight": 0.2,
+                            "source": "old",
+                        }
+                    ],
+                },
+            ),
+        )
+        with (
+            patch.dict("app.build.FUNDS", {"TEST": unchanged_cfg}, clear=True),
+            patch(
+                "app.build.fund_page_data",
+                return_value={
+                    "name": "Old",
+                    "navs": [nav("2026-07-09", 1.0)],
+                    "allocation": {},
+                    "stock_codes": [],
+                },
+            ),
+            patch("app.build.parse_navs", side_effect=lambda rows: rows),
+            patch(
+                "app.build.fetch_report_publish_dates",
+                return_value={"2026-03-31": "2026-04-22"},
+            ),
+            patch("app.build.fetch_latest_regular_report", return_value=None),
+        ):
+            import_fund_data(con, "TEST")
+
+        self.assertEqual(load_backtest_dirty(con), {"TEST": "2026-07-01"})
+
+    def test_older_report_backfill_without_selected_holding_change_is_clean(self) -> None:
+        current = {
+            "2026-06-30": (
+                ("2026-06-30", "2026-07-01", "0.CURRENT", "0.2", "test"),
+            )
+        }
+        with_backfill = {
+            **current,
+            "2025-12-31": (
+                ("2025-12-31", "2026-01-20", "0.OLD", "0.1", "test"),
+            ),
+        }
+
+        self.assertIsNone(
+            earliest_backtest_affected_by_holdings(
+                current,
+                with_backfill,
+                [("2026-07-10", "2026-07-09")],
+            )
+        )
+
+    def test_each_valuation_relevant_holding_field_invalidates(self) -> None:
+        baseline = {
+            "2026-06-30": (
+                ("2026-06-30", "2026-07-01", "0.A", "0.2", "test"),
+            )
+        }
+        variants = {
+            "report_date": {
+                "2026-06-29": (
+                    ("2026-06-29", "2026-07-01", "0.A", "0.2", "test"),
+                )
+            },
+            "publish_date": {
+                "2026-06-30": (
+                    ("2026-06-30", "2026-07-10", "0.A", "0.2", "test"),
+                )
+            },
+            "secid": {
+                "2026-06-30": (
+                    ("2026-06-30", "2026-07-01", "0.B", "0.2", "test"),
+                )
+            },
+            "weight": {
+                "2026-06-30": (
+                    ("2026-06-30", "2026-07-01", "0.A", "0.3", "test"),
+                )
+            },
+            "source": {
+                "2026-06-30": (
+                    ("2026-06-30", "2026-07-01", "0.A", "0.2", "corrected"),
+                )
+            },
+        }
+
+        for field, changed in variants.items():
+            with self.subTest(field=field):
+                self.assertEqual(
+                    earliest_backtest_affected_by_holdings(
+                        baseline,
+                        changed,
+                        [("2026-07-10", "2026-07-09")],
+                    ),
+                    "2026-07-10",
+                )
+
+    def test_announcement_only_change_does_not_invalidate_backtests(self) -> None:
+        con = make_connection()
+        seed_old_snapshot(con)
+        con.execute(
+            """
+            insert into backtests
+            (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
+             error_pct, covered_weight, data_quality)
+            values ('TEST', '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1, 'ok')
+            """
+        )
+        unchanged_cfg = FundConfig(
+            code="TEST",
+            exchange_market=0,
+            manual_holdings_mode="replace",
+            manual_holdings=(
+                {
+                    "report_date": "2026-03-31",
+                    "holdings": [
+                        {
+                            "secid": "0.OLD",
+                            "name": "Old",
+                            "weight": 0.2,
+                            "source": "old",
+                        }
+                    ],
+                },
+            ),
+        )
+        incoming_report = {
+            "title": "Test基金2026年第1季度报告（更正）",
+            "publish_date": "2026-04-22",
+            "announcement_id": "corrected-id",
+            "url": "corrected-url",
+            "report_date": "2026-03-31",
+        }
+        with (
+            patch.dict("app.build.FUNDS", {"TEST": unchanged_cfg}, clear=True),
+            patch(
+                "app.build.fund_page_data",
+                return_value={
+                    "name": "Old",
+                    "navs": [nav("2026-07-09", 1.0)],
+                    "allocation": {},
+                    "stock_codes": [],
+                },
+            ),
+            patch("app.build.parse_navs", side_effect=lambda rows: rows),
+            patch(
+                "app.build.fetch_report_publish_dates",
+                return_value={"2026-03-31": "2026-04-22"},
+            ),
+        ):
+            import_fund_data(con, "TEST", latest_report=incoming_report)
+
+        self.assertEqual(load_backtest_dirty(con), {})
+        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 1)
         self.assertEqual(
-            get_meta(con, "pending_report_backtests"),
-            {"TEST": "2026-07-20"},
+            con.execute(
+                "select announcement_id from fund_announcements where fund_code='TEST'"
+            ).fetchone()[0],
+            "corrected-id",
+        )
+
+    def test_failure_after_invalidation_rolls_back_snapshot_rows_and_dirty(self) -> None:
+        con = make_connection()
+        seed_old_snapshot(con)
+        con.execute(
+            """
+            insert into backtests
+            (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
+             error_pct, covered_weight, data_quality)
+            values ('TEST', '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1, 'ok')
+            """
+        )
+        con.commit()
+
+        def invalidate_then_fail(connection, code, from_date):
+            invalidate_backtests(connection, code, from_date)
+            raise RuntimeError("simulated post-invalidation failure")
+
+        contexts = self.mocked_sources(con)
+        with ExitStack() as stack:
+            for context in contexts:
+                stack.enter_context(context)
+            stack.enter_context(
+                patch(
+                    "app.build.invalidate_backtests",
+                    side_effect=invalidate_then_fail,
+                )
+            )
+            with self.assertRaisesRegex(RuntimeError, "post-invalidation"):
+                import_fund_data(con, "TEST")
+
+        self.assertEqual(load_backtest_dirty(con), {})
+        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 1)
+        self.assertEqual(
+            con.execute("select secid from holdings where fund_code='TEST'").fetchone()[0],
+            "0.OLD",
         )
 
     def test_new_announcement_waits_for_matching_holding_period(self) -> None:

@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.backtest_state import (
+    BACKTEST_DIRTY_META_KEY,
+    LEGACY_BACKTEST_DIRTY_META_KEY,
+)
 from app.db import database_readiness, get_meta, set_meta
 from app.runtime import db_path
 from app.valuation import DEFAULT_BACKTEST_DAYS
@@ -107,7 +111,11 @@ def trim_seed_database(con: sqlite3.Connection, retention: SeedRetention) -> Non
            or key in ('pending_config_hash', 'schema_repair_issues')
         """
     )
-    set_meta(con, "pending_report_backtests", {})
+    set_meta(con, BACKTEST_DIRTY_META_KEY, {})
+    con.execute(
+        "delete from metadata where key = ?",
+        (LEGACY_BACKTEST_DIRTY_META_KEY,),
+    )
     set_meta(con, "seed_format_version", 1)
     set_meta(con, "seed_generated_at", datetime.now(timezone.utc).isoformat())
     set_meta(con, "seed_retention", values)

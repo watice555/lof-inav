@@ -65,6 +65,20 @@ def validate_rules(rules: Any) -> list[str]:
         return ["funds must be a non-empty object"]
     for code, item in funds.items():
         errors.extend(validate_fund(code, item))
+    archived_funds = rules.get("archived_funds", {})
+    if not isinstance(archived_funds, dict):
+        errors.append("archived_funds must map fund codes to delisting dates")
+        return errors
+    for code, delisted_on in archived_funds.items():
+        if code not in funds:
+            errors.append(f"archived_funds.{code}: fund rule is missing")
+        try:
+            if date.fromisoformat(delisted_on).isoformat() != delisted_on:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(f"archived_funds.{code}: delisting date must be YYYY-MM-DD")
+    if not funds.keys() - archived_funds.keys():
+        errors.append("at least one fund must remain active")
     return errors
 
 

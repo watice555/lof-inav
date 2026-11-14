@@ -13,6 +13,7 @@ from app.sources import (
     csindex_daily_prices,
     csindex_realtime_quote,
     fetch_daily_prices,
+    fallback_realtime_quote,
     hang_seng_index_daily_prices,
     hang_seng_index_realtime_quote,
     special_realtime_quote,
@@ -47,6 +48,16 @@ def make_csindex_workbook(rows: list[tuple[str, str, str]]) -> bytes:
 
 
 class IndexPriceSourceTests(unittest.TestCase):
+    def test_missing_us_holdings_use_their_provider_tickers(self) -> None:
+        for secid, symbol in (("105.VNET", "VNET"), ("107.IMVP", "IMVP")):
+            quote = {"secid": secid, "price": 10}
+            with (
+                self.subTest(secid=secid),
+                patch("app.sources.yahoo_realtime_quote", return_value=quote) as fallback,
+            ):
+                self.assertEqual(fallback_realtime_quote(secid), quote)
+                fallback.assert_called_once_with(secid, symbol)
+
     def test_csindex_official_intraday_quote_is_normalized(self) -> None:
         document = {
             "data": {
@@ -351,6 +362,30 @@ class FundEtfBasketTests(unittest.TestCase):
             expected,
         )
         self.assertAlmostEqual(sum(expected.values()), 0.6928)
+
+    def test_us_holding_fallback_uses_yahoo_and_preserves_internal_secid(self) -> None:
+        for secid, name in (
+            ("105.ADBE", "Adobe Inc."),
+            ("105.IBM", "International Business Machines"),
+            ("105.TSM", "Taiwan Semiconductor Manufacturing"),
+            ("105.Q", "Qnity Electronics, Inc."),
+        ):
+            with self.subTest(secid=secid), patch("app.sources._get") as get:
+                get.return_value.json.return_value = {"chart": {"result": [{
+                    "meta": {
+                        "shortName": name, "regularMarketPrice": 101,
+                        "regularMarketTime": 1791403200,
+                    },
+                    "indicators": {"quote": [{"close": [100, 101]}]},
+                }]}}
+                quote = fallback_realtime_quote(secid)
+                self.assertEqual(quote["secid"], secid)
+                self.assertEqual(quote["name"], name)
+                self.assertEqual(quote["price"], 101)
+                self.assertEqual(quote["previous_close"], 100)
+                self.assertTrue(quote["quote_time"])
+                self.assertEqual(get.call_count, 1)
+                self.assertTrue(get.call_args.args[0].endswith("/" + secid.split(".")[1]))
 
     def test_160216_q2_etfs_have_yahoo_fallback_symbols(self) -> None:
         symbols = {

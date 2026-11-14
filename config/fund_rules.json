@@ -1,4 +1,7 @@
 {
+  "archived_funds": {
+    "165512": "2026-10-28"
+  },
   "funds": {
     "501301": {
       "exchange_market": 1,
@@ -30,6 +33,20 @@
               "symbol": "HSFML25",
               "name": "恒生中国(香港上市)30指数",
               "weight": 0.946,
+              "source": "index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.9 披露目标 ETF 占基金资产净值 94.74%，继续用其跟踪的恒生中国(香港上市)30指数代理。",
+          "holdings": [
+            {
+              "secid": "124.HSFML25",
+              "symbol": "HSFML25",
+              "name": "恒生中国(香港上市)30指数",
+              "weight": 0.9474,
               "source": "index_proxy"
             }
           ]
@@ -374,6 +391,62 @@
               "source": "announcement_fund_proxy"
             }
           ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.9 披露前十名基金投资明细，合计 89.02%。三个 MSCI India 产品映射 INDA，Core SENSEX 与 India 50 合并映射 INDY，NEXT FUNDS Nifty 50 映射 NFTY；Invesco India ETF 使用 2026-02-23 起的代码 IMVP。",
+          "holdings": [
+            {
+              "secid": "107.INDA",
+              "symbol": "INDA",
+              "name": "MSCI India ETF 等效代理",
+              "weight": 0.48,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.EPI",
+              "symbol": "EPI",
+              "name": "WisdomTree India Earnings Fund",
+              "weight": 0.1628,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.INDY",
+              "symbol": "INDY",
+              "name": "India 50/SENSEX ETF 等效代理",
+              "weight": 0.0871,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.SMIN",
+              "symbol": "SMIN",
+              "name": "iShares MSCI India Small-Cap ETF",
+              "weight": 0.0744,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.NFTY",
+              "symbol": "NFTY",
+              "name": "Nifty 50 ETF 等效代理",
+              "weight": 0.035,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.INCO",
+              "symbol": "INCO",
+              "name": "Columbia India Consumer ETF",
+              "weight": 0.033,
+              "source": "announcement_fund_proxy"
+            },
+            {
+              "secid": "107.IMVP",
+              "symbol": "IMVP",
+              "name": "Invesco India ETF",
+              "weight": 0.0179,
+              "source": "announcement_fund_proxy"
+            }
+          ]
         }
       ]
     },
@@ -449,6 +522,20 @@
               "symbol": "IXC",
               "name": "iShares Global Energy ETF",
               "weight": 0.9543,
+              "source": "announcement_index_proxy"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.2 股票及存托凭证合计占基金资产净值 93.68%，用全球能源 ETF IXC 代理。",
+          "holdings": [
+            {
+              "secid": "107.IXC",
+              "symbol": "IXC",
+              "name": "iShares Global Energy ETF",
+              "weight": 0.9368,
               "source": "announcement_index_proxy"
             }
           ]
@@ -542,6 +629,20 @@
               "symbol": "XAU",
               "name": "黄金现货等效代理",
               "weight": 0.9686,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.9 披露 6 只实物黄金 ETF，按披露权重相加为 94.86%，映射为黄金现货等效敞口。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.9486,
               "source": "lookthrough_commodity"
             }
           ]
@@ -672,6 +773,27 @@
               "source": "lookthrough_commodity"
             }
           ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.9 披露 6 只原油 ETF/ETC。WTI 合计 56.97%，Brent 合计 38.24%，继续按标的原油分类；5.2 无股票及存托凭证。",
+          "holdings": [
+            {
+              "secid": "102.CL00Y",
+              "symbol": "CL00Y",
+              "name": "WTI原油等效代理",
+              "weight": 0.5697,
+              "source": "lookthrough_commodity"
+            },
+            {
+              "secid": "112.B00Y",
+              "symbol": "B00Y",
+              "name": "Brent原油等效代理",
+              "weight": 0.3824,
+              "source": "lookthrough_commodity"
+            }
+          ]
         }
       ]
     },
@@ -747,6 +869,20 @@
               "symbol": "XAU",
               "name": "黄金现货等效代理",
               "weight": 1.0141,
+              "source": "lookthrough_commodity"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.9 披露 8 只黄金 ETF，名义合计 93.32%。普通黄金 ETF 合计 87.03%，ProShares Ultra Gold 6.29% 按日度 2 倍目标折算，黄金等效敞口约 99.61%。",
+          "holdings": [
+            {
+              "secid": "122.XAU",
+              "symbol": "XAU",
+              "name": "黄金现货等效代理",
+              "weight": 0.9961,
               "source": "lookthrough_commodity"
             }
           ]
@@ -1923,7 +2059,7 @@
       "proxy_secids": [],
       "proxy_basis": "stock_gap",
       "manual_holdings_mode": "replace",
-      "note": "中证海外中国互联网 LOF，标的指数 H11136 同时覆盖港股和美股 ADR；2026Q1 原始公告港股 65.94%、美股 ADR 25.53%，最新期用底层指数篮子替代 KWEB 单 ETF 价格代理；早期回测区间用同标的指数 ETF KWEB 补足，历史拟合不确定性较高",
+      "note": "中证海外中国互联网 LOF，标的指数 H11136 覆盖港股和美股 ADR。2026Q3 按季报录入前十大，其余用同指数 ETF 股票篮子分市场补足；早期区间用 KWEB 单 ETF 代理，历史拟合不确定性较高",
       "manual_holdings": [
         {
           "report_date": "2025-06-30",
@@ -2383,6 +2519,314 @@
               "symbol": "WB",
               "name": "Weibo Corp.",
               "weight": 0.0043,
+              "source": "index_constituent_basket"
+            }
+          ]
+        },
+        {
+          "report_date": "2026-09-30",
+          "publish_date": "2026-10-27",
+          "rationale": "2026Q3 原始季报 5.2 披露中国香港 71.59%、美国 20.80%，合计占基金资产净值 92.39%；前十大按 5.4.1 披露权重录入。其余仓位用跟踪同一 H11136 指数的 KraneShares KWEB UCITS ETF 2026-09-22 披露股票篮子代理，剔除已录入前十大及现金，按两地剩余权重分别缩放。",
+          "holdings": [
+            {
+              "secid": "116.00700",
+              "symbol": "00700",
+              "name": "腾讯控股",
+              "weight": 0.0964,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.09988",
+              "symbol": "09988",
+              "name": "阿里巴巴-W",
+              "weight": 0.08,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "105.PDD",
+              "symbol": "PDD",
+              "name": "PDD Holdings Inc.",
+              "weight": 0.0746,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.03690",
+              "symbol": "03690",
+              "name": "美团-W",
+              "weight": 0.0646,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.09999",
+              "symbol": "09999",
+              "name": "网易-S",
+              "weight": 0.0611,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.00992",
+              "symbol": "00992",
+              "name": "联想集团",
+              "weight": 0.0554,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.02423",
+              "symbol": "02423",
+              "name": "贝壳-W",
+              "weight": 0.0429,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.09618",
+              "symbol": "09618",
+              "name": "京东集团-SW",
+              "weight": 0.0359,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.09961",
+              "symbol": "09961",
+              "name": "携程集团-S",
+              "weight": 0.0324,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.09888",
+              "symbol": "09888",
+              "name": "百度集团-SW",
+              "weight": 0.0299,
+              "source": "announcement_stock"
+            },
+            {
+              "secid": "116.01024",
+              "symbol": "01024",
+              "name": "快手-W",
+              "weight": 0.0282,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.YMM",
+              "symbol": "YMM",
+              "name": "Full Truck Alliance Co. Ltd.",
+              "weight": 0.0275,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.06618",
+              "symbol": "06618",
+              "name": "京东健康",
+              "weight": 0.0232,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.BZ",
+              "symbol": "BZ",
+              "name": "Kanzhun Ltd.",
+              "weight": 0.0222,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.TAL",
+              "symbol": "TAL",
+              "name": "TAL Education Group",
+              "weight": 0.0214,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00020",
+              "symbol": "00020",
+              "name": "商汤-W",
+              "weight": 0.0214,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.TME",
+              "symbol": "TME",
+              "name": "Tencent Music Entertainment Group",
+              "weight": 0.0199,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09626",
+              "symbol": "09626",
+              "name": "哔哩哔哩-W",
+              "weight": 0.0196,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09698",
+              "symbol": "09698",
+              "name": "万国数据-SW",
+              "weight": 0.0163,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.03888",
+              "symbol": "03888",
+              "name": "金山软件",
+              "weight": 0.014,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.VIPS",
+              "symbol": "VIPS",
+              "name": "Vipshop Holdings Ltd.",
+              "weight": 0.0139,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00268",
+              "symbol": "00268",
+              "name": "金蝶国际",
+              "weight": 0.0138,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.JOYY",
+              "symbol": "JOYY",
+              "name": "JOYY Inc.",
+              "weight": 0.0092,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00241",
+              "symbol": "00241",
+              "name": "阿里健康",
+              "weight": 0.0092,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00136",
+              "symbol": "00136",
+              "name": "中国儒意",
+              "weight": 0.0084,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.VNET",
+              "symbol": "VNET",
+              "name": "VNET Group Inc.",
+              "weight": 0.0079,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00780",
+              "symbol": "00780",
+              "name": "同程旅行",
+              "weight": 0.0072,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01357",
+              "symbol": "01357",
+              "name": "美图公司",
+              "weight": 0.0065,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01797",
+              "symbol": "01797",
+              "name": "东方甄选",
+              "weight": 0.0063,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.06060",
+              "symbol": "06060",
+              "name": "众安在线",
+              "weight": 0.0063,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.03896",
+              "symbol": "03896",
+              "name": "金山云",
+              "weight": 0.0061,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.02513",
+              "symbol": "02513",
+              "name": "智谱",
+              "weight": 0.0059,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.ATHM",
+              "symbol": "ATHM",
+              "name": "Autohome Inc.",
+              "weight": 0.0058,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00772",
+              "symbol": "00772",
+              "name": "阅文集团",
+              "weight": 0.0049,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09899",
+              "symbol": "09899",
+              "name": "云音乐",
+              "weight": 0.0038,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.09903",
+              "symbol": "09903",
+              "name": "天数智芯",
+              "weight": 0.0035,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01833",
+              "symbol": "01833",
+              "name": "平安好医生",
+              "weight": 0.0033,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.QFIN",
+              "symbol": "QFIN",
+              "name": "Qfin Holdings Inc.",
+              "weight": 0.0031,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.01060",
+              "symbol": "01060",
+              "name": "大麦娱乐",
+              "weight": 0.0028,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.06082",
+              "symbol": "06082",
+              "name": "壁仞科技",
+              "weight": 0.0027,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "105.WB",
+              "symbol": "WB",
+              "name": "Weibo Corp.",
+              "weight": 0.0025,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.02577",
+              "symbol": "02577",
+              "name": "英诺赛科",
+              "weight": 0.0023,
+              "source": "index_constituent_basket"
+            },
+            {
+              "secid": "116.00100",
+              "symbol": "00100",
+              "name": "MINIMAX-W",
+              "weight": 0.0016,
               "source": "index_constituent_basket"
             }
           ]

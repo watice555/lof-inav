@@ -5,9 +5,16 @@ import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator
 
-from .config import DATA_DIR, DB_PATH, FUND_RULES_PATH, FUNDS
+from .backtest_metadata import (
+    BACKTEST_DIRTY_META_KEY,
+    BACKTEST_REBUILD_LAST_ATTEMPT_META_KEY,
+    BACKTEST_REBUILD_REQUIRED_META_KEY,
+    LEGACY_BACKTEST_DIRTY_META_KEY,
+)
+from .config import DATA_DIR, DB_PATH, FUND_RULES_PATH, FUNDS, load_fund_rules
 
 
 SCHEMA = """
@@ -51,6 +58,12 @@ create table if not exists quotes (
     previous_close real,
     quote_time text,
     session_date text,
+    volume real,
+    bid_price real,
+    bid_volume integer,
+    ask_price real,
+    ask_volume integer,
+    trade_status text not null default 'unknown',
     last_attempt_at text,
     last_success_at text,
     fetch_status text not null default 'ok',
@@ -161,6 +174,12 @@ SCHEMA_CONTRACT: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "previous_close",
             "quote_time",
             "session_date",
+            "volume",
+            "bid_price",
+            "bid_volume",
+            "ask_price",
+            "ask_volume",
+            "trade_status",
             "last_attempt_at",
             "last_success_at",
             "fetch_status",
@@ -222,9 +241,10 @@ SCHEMA_CONTRACT: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 # Bump this whenever persisted backtest inputs or calculation semantics change.
 # A stale derived cache is less safe than an empty cache: it will be rebuilt by
 # the normal full/incremental refresh paths.
-BACKTEST_CACHE_VERSION = 5
+BACKTEST_CACHE_VERSION = 7
 HISTORICAL_PRICE_CACHE_VERSION = 3
 SCHEMA_VERSION = 1
+BACKTEST_REBUILD_LOOKBACK_DAYS = 7
 
 
 def init_db() -> None:
@@ -237,6 +257,18 @@ def init_db() -> None:
                 "select name from sqlite_master where type = 'table'"
             )
         }
+        # This additive snapshot upgrade needs only the next quote refresh,
+        # not a rebuild of holdings, NAVs or historical derived data.
+        if "quotes" in existing_tables:
+            for column, declaration in (
+                ("volume", "real"),
+                ("bid_price", "real"),
+                ("bid_volume", "integer"),
+                ("ask_price", "real"),
+                ("ask_volume", "integer"),
+                ("trade_status", "text not null default 'unknown'"),
+            ):
+                _ensure_column(con, "quotes", column, declaration)
         repaired_contract_issues = (
             schema_contract_issues(con)
             if existing_tables.intersection(SCHEMA_CONTRACT)
@@ -350,7 +382,10 @@ def get_meta(con: sqlite3.Connection, key: str, default: Any = None) -> Any:
 
 
 def ensure_cache_versions(con: sqlite3.Connection) -> None:
-    if get_meta(con, "historical_price_cache_version") != HISTORICAL_PRICE_CACHE_VERSION:
+    historical_price_version = get_meta(con, "historical_price_cache_version")
+    backtest_version = get_meta(con, "backtest_cache_version")
+    version_changes: dict[str, dict[str, int | None]] = {}
+    if historical_price_version != HISTORICAL_PRICE_CACHE_VERSION:
         invalid_price = (
             "close is null or typeof(close) not in ('integer', 'real') "
             "or close <= 0 or close > 1e100 or close != close"
@@ -359,17 +394,97 @@ def ensure_cache_versions(con: sqlite3.Connection) -> None:
         con.execute(f"delete from mark_prices where {invalid_price}")
         con.execute("update daily_prices set pct = null where pct != pct or abs(pct) > 1000")
         con.execute("delete from daily_prices where source = 'unknown'")
-        con.execute("delete from backtests")
         set_meta(con, "historical_price_cache_version", HISTORICAL_PRICE_CACHE_VERSION)
-    if get_meta(con, "backtest_cache_version") == BACKTEST_CACHE_VERSION:
+        version_changes["historical_price_cache_version"] = {
+            "from": historical_price_version,
+            "to": HISTORICAL_PRICE_CACHE_VERSION,
+        }
+    if backtest_version != BACKTEST_CACHE_VERSION:
+        set_meta(con, "backtest_cache_version", BACKTEST_CACHE_VERSION)
+        version_changes["backtest_cache_version"] = {
+            "from": backtest_version,
+            "to": BACKTEST_CACHE_VERSION,
+        }
+    if not version_changes:
         return
     con.execute("delete from backtests")
-    set_meta(con, "backtest_cache_version", BACKTEST_CACHE_VERSION)
+    queue_backtest_cache_rebuild(con, version_changes)
+
+
+def queue_backtest_cache_rebuild(
+    con: sqlite3.Connection,
+    version_changes: dict[str, dict[str, int | None]],
+) -> None:
+    """Queue the normal bounded backtest window after a cache migration."""
+    anchors: dict[str, str] = {}
+    for key in (LEGACY_BACKTEST_DIRTY_META_KEY, BACKTEST_DIRTY_META_KEY):
+        raw = get_meta(con, key, {})
+        if not isinstance(raw, dict):
+            continue
+        for code, anchor in raw.items():
+            if isinstance(code, str) and _is_iso_date(anchor):
+                anchors[code] = min(anchors.get(code, anchor), anchor)
+
+    queued_codes = set()
+    for row in con.execute(
+        "select fund_code, max(date) as latest_date from navs group by fund_code"
+    ):
+        code = row["fund_code"]
+        if code not in FUNDS or not _is_iso_date(row["latest_date"]):
+            continue
+        latest_day = date.fromisoformat(row["latest_date"])
+        anchor = (latest_day - timedelta(days=BACKTEST_REBUILD_LOOKBACK_DAYS)).isoformat()
+        anchors[code] = min(anchors.get(code, anchor), anchor)
+        queued_codes.add(code)
+
+    con.execute(
+        "delete from metadata where key in (?, ?, ?)",
+        (
+            LEGACY_BACKTEST_DIRTY_META_KEY,
+            "last_incremental_backtests_refresh_at",
+            "last_incremental_backtests_refresh_errors",
+        ),
+    )
+    if anchors:
+        set_meta(con, BACKTEST_DIRTY_META_KEY, anchors)
+    if not queued_codes:
+        con.execute(
+            "delete from metadata where key in (?, ?)",
+            (
+                BACKTEST_REBUILD_REQUIRED_META_KEY,
+                BACKTEST_REBUILD_LAST_ATTEMPT_META_KEY,
+            ),
+        )
+        return
+    set_meta(
+        con,
+        BACKTEST_REBUILD_REQUIRED_META_KEY,
+        {
+            "reason": "cache_version_changed",
+            "version_changes": version_changes,
+            "target_count": len(queued_codes),
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    con.execute(
+        "delete from metadata where key = ?",
+        (BACKTEST_REBUILD_LAST_ATTEMPT_META_KEY,),
+    )
+
+
+def _is_iso_date(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
 
 
 def current_config_hash() -> str:
-    with FUND_RULES_PATH.open("r", encoding="utf-8") as file:
-        rules = json.load(file)
+    rules = load_fund_rules(FUND_RULES_PATH)
+    # Archiving changes refresh membership without changing valuation rules.
+    rules.pop("archived_funds", None)
     canonical = json.dumps(rules, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -404,6 +519,14 @@ def ensure_config_state(con: sqlite3.Connection) -> None:
     con.execute("delete from metadata where key = 'pending_config_hash'")
     if build_state is None:
         set_meta(con, "build_state", "legacy" if has_cached_core else "empty")
+
+
+def quote_fetch_missing_secids(con: sqlite3.Connection, secids: list[str] | None = None) -> list[str]:
+    """Read per-instrument outcomes, retaining failures across partial refreshes."""
+    rows = con.execute("select secid, fetch_status from quotes").fetchall()
+    statuses = {row["secid"]: row["fetch_status"] for row in rows}
+    targets = statuses if secids is None else secids
+    return sorted({secid for secid in targets if statuses.get(secid) != "ok"})
 
 
 def missing_core_data_codes(con: sqlite3.Connection) -> dict[str, list[str]]:

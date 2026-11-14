@@ -68,11 +68,12 @@ const typeOrder = [
 
 const typeOrderRank = new Map(typeOrder.map((type, index) => [type, index]));
 const defaultExcludedTypePrefixes = ["A股-"];
-const COLUMN_STORAGE_KEY = "lof-inav-visible-columns-v2";
+const COLUMN_STORAGE_KEY = "lof-inav-visible-columns-v5";
 const DETAIL_SCROLL_STORAGE_KEY = "lof-inav-auto-scroll-details-v1";
 const REFRESH_POLL_DELAY_MS = 3_000;
-const ACTIVE_REFRESH_DELAY_MS = 60_000;
-const INACTIVE_REFRESH_DELAY_MS = 30 * 60_000;
+const VISIBLE_REFRESH_DELAY_MS = 60_000;
+const IDLE_VISIBLE_REFRESH_DELAY_MS = 5 * 60_000;
+const HIDDEN_REFRESH_DELAY_MS = 30 * 60_000;
 const ACTIVE_GRACE_MS = 5 * 60_000;
 const ACTIVITY_EVENTS = ["click", "keydown", "mousemove", "scroll", "touchstart"];
 const TABLE_RENDER_CHUNK_SIZE = 80;
@@ -155,13 +156,23 @@ const tableColumns = [
   },
   {
     key: "trade_price",
-    title: "场内价格",
-    width: 0.07,
+    title: "场内成交价",
+    width: 0.085,
     className: "fund-col-price",
-    defaultVisible: true,
+    defaultVisible: false,
     sortValue: (fund) => fund.trade_price,
     cell: (fund) => renderTradePrice(fund),
-    exportCell: (fund) => [fmt(fund.trade_price, 3), minuteTime(fund.quote_time)],
+    exportCell: (fund) => [fmt(fund.trade_price, 3), tradeQuoteStatusText(fund), minuteTime(fund.quote_time)],
+  },
+  {
+    key: "order_book",
+    title: "买一 / 卖一",
+    width: 0.13,
+    className: "fund-col-book",
+    defaultVisible: false,
+    sortValue: (fund) => fund.order_book?.bid_price,
+    cell: (fund) => renderOrderBook(fund),
+    exportCell: (fund) => orderBookLines(fund),
   },
   {
     key: "estimated_nav",
@@ -174,14 +185,47 @@ const tableColumns = [
     exportCell: (fund) => [fmt(fund.estimated_nav, 4)],
   },
   {
+    key: "smart_premium",
+    title: "智能折溢价",
+    description: "卖一低于系统估值显示买入折价，买一高于系统估值显示卖出溢价，否则无机会。仅参考当前一档挂单，未扣费用。",
+    width: 0.11,
+    className: "fund-col-smart-premium",
+    defaultVisible: true,
+    sortValue: (fund) => fund.smart_premium,
+    cell: (fund) => renderSmartPremium(fund),
+    exportCell: (fund) => smartPremiumLines(fund),
+  },
+  {
     key: "premium",
-    title: "折溢价率",
+    title: "成交折溢价",
     width: 0.07,
     className: "fund-col-premium",
-    defaultVisible: true,
+    defaultVisible: false,
     sortValue: (fund) => fund.premium,
     cell: (fund) => signedPct(fund.premium),
     exportCell: (fund) => [pct(fund.premium)],
+  },
+  {
+    key: "buy_premium",
+    title: "买入折价",
+    description: "卖一低于系统估值时显示卖一 ÷ 系统估值 − 1。对应卖一挂单量，未扣费用。",
+    width: 0.085,
+    className: "fund-col-book-premium",
+    defaultVisible: false,
+    sortValue: (fund) => directionalPremiumValue(fund, "buy_premium"),
+    cell: (fund) => renderDirectionalPremium(fund, "buy_premium"),
+    exportCell: (fund) => [directionalPremiumText(fund, "buy_premium")],
+  },
+  {
+    key: "sell_premium",
+    title: "卖出溢价",
+    description: "买一高于系统估值时显示买一 ÷ 系统估值 − 1。对应买一挂单量，未扣费用。",
+    width: 0.085,
+    className: "fund-col-book-premium",
+    defaultVisible: false,
+    sortValue: (fund) => directionalPremiumValue(fund, "sell_premium"),
+    cell: (fund) => renderDirectionalPremium(fund, "sell_premium"),
+    exportCell: (fund) => [directionalPremiumText(fund, "sell_premium")],
   },
   {
     key: "covered_weight",
@@ -244,6 +288,51 @@ function signedPct(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return `<span>--</span>`;
   const cls = value >= 0 ? "pos" : "neg";
   return `<span class="${cls}">${pct(value)}</span>`;
+}
+
+function directionalPremiumValue(fund, key) {
+  const value = fund[key];
+  if (!Number.isFinite(value)) return null;
+  return (key === "buy_premium" ? value < 0 : value > 0) ? value : 0;
+}
+
+function directionalPremiumText(fund, key) {
+  const value = directionalPremiumValue(fund, key);
+  if (value == null) return "--";
+  return value === 0 ? (key === "buy_premium" ? "无折价" : "无溢价") : pct(value);
+}
+
+function renderDirectionalPremium(fund, key) {
+  const value = directionalPremiumValue(fund, key);
+  return value ? signedPct(value) : `<span class="muted">${directionalPremiumText(fund, key)}</span>`;
+}
+
+function smartPremiumLines(fund) {
+  const labels = {
+    buy_discount: "买入折价",
+    sell_premium: "卖出溢价",
+    none: "无机会",
+    missing: "行情未获取",
+    fetch_failed: "行情取数失败",
+    stale: "行情缓存过期",
+    estimate_missing: "估值缺失",
+    book_missing: "盘口缺失",
+    book_incomplete: "盘口不全",
+    book_invalid: "盘口异常",
+  };
+  const label = labels[fund.smart_premium_status] || "--";
+  return ["buy_discount", "sell_premium"].includes(fund.smart_premium_status)
+    ? [pct(fund.smart_premium), label]
+    : [label];
+}
+
+function renderSmartPremium(fund) {
+  const lines = smartPremiumLines(fund);
+  const title = [tradeQuoteStatusText(fund), ...orderBookLines(fund)].filter(Boolean).join("\n");
+  const content = lines.length === 2
+    ? valueWithMeta(signedPct(fund.smart_premium), lines[1])
+    : `<span class="muted">${escapeHtml(lines[0])}</span>`;
+  return `<span title="${escapeHtml(title)}">${content}</span>`;
 }
 
 function navWithChange(value, previousNav) {
@@ -317,7 +406,37 @@ function renderTradePrice(fund) {
   const priceHtml = quoteUrl
     ? `<a class="quote-price-link" href="${escapeHtml(quoteUrl)}" target="_blank" rel="noreferrer" title="打开东方财富实时行情">${escapeHtml(priceText)}</a>`
     : escapeHtml(priceText);
-  return valueWithMeta(priceHtml, minuteTime(fund.quote_time));
+  return valueWithMeta(priceHtml, tradeQuoteStatusText(fund) || minuteTime(fund.quote_time));
+}
+
+function tradeQuoteStatusText(fund) {
+  const labels = {
+    no_trade: "当日无成交",
+    book_only: "成交价缺失",
+    fetch_failed: "行情取数失败",
+    missing: "行情未获取",
+    stale: "行情缓存过期",
+  };
+  return labels[fund.quote_status] || "";
+}
+
+function orderBookLines(fund) {
+  const book = fund.order_book;
+  if (!book) return ["--"];
+  const side = (label, price, volume) => price != null && volume != null
+    ? `${label} ${fmt(price, 3)} · ${Number(volume).toLocaleString("zh-CN")} 份`
+    : `${label} --`;
+  return [
+    side("买一", book.bid_price, book.bid_volume),
+    side("卖一", book.ask_price, book.ask_volume),
+    minuteTime(book.quote_time),
+  ];
+}
+
+function renderOrderBook(fund) {
+  return `<span class="value-stack order-book">${orderBookLines(fund)
+    .map((line, index) => `<span${index === 2 ? ' class="value-meta"' : ""}>${escapeHtml(line)}</span>`)
+    .join("")}</span>`;
 }
 
 function getTradeQuoteUrl(fund) {
@@ -378,9 +497,15 @@ function loadVisibleColumnKeys() {
   const knownKeys = new Set(tableColumns.map((column) => column.key));
   try {
     const raw = window.localStorage.getItem(COLUMN_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
+    const previous = !raw ? ["v4", "v3", "v2"]
+      .map((version) => window.localStorage.getItem(`lof-inav-visible-columns-${version}`))
+      .find(Boolean) : null;
+    const stored = raw || previous;
+    const parsed = stored ? JSON.parse(stored) : null;
     if (Array.isArray(parsed)) {
-      const keys = parsed.filter((key) => knownKeys.has(key));
+      const newlyHidden = new Set(["trade_price", "order_book", "premium", "buy_premium", "sell_premium"]);
+      const keys = parsed.filter((key) => knownKeys.has(key) && (!previous || !newlyHidden.has(key)));
+      if (previous && !keys.includes("smart_premium")) keys.push("smart_premium");
       tableColumns.forEach((column) => {
         if (column.required && !keys.includes(column.key)) keys.push(column.key);
       });
@@ -454,12 +579,15 @@ function renderTableStructure() {
   tableHeadersEl.innerHTML = columns
     .map((column) => {
       const alignClass = column.align === "left" ? " align-left" : "";
+      const titleHtml = column.headerLines
+        ? `<span class="column-header-lines">${column.headerLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</span>`
+        : escapeHtml(column.title);
       if (!column.sortValue) {
         return `<th class="${alignClass.trim()}">${escapeHtml(column.title)}</th>`;
       }
       return `
-        <th class="${alignClass.trim()}" data-sort-key="${escapeHtml(column.key)}" aria-sort="none">
-          <button class="sort-button" type="button">${escapeHtml(column.title)}</button>
+        <th class="${alignClass.trim()}" data-sort-key="${escapeHtml(column.key)}" aria-sort="none" title="${escapeHtml(column.description || column.title)}">
+          <button class="sort-button" type="button">${titleHtml}</button>
         </th>
       `;
     })
@@ -492,12 +620,13 @@ function isPageVisible() {
   return document.visibilityState !== "hidden";
 }
 
-function isPageActive(now = Date.now()) {
-  return isPageVisible() && now - lastUserActivityAt <= ACTIVE_GRACE_MS;
-}
-
 function autoRefreshDelay(now = Date.now()) {
-  const interval = isPageActive(now) ? ACTIVE_REFRESH_DELAY_MS : INACTIVE_REFRESH_DELAY_MS;
+  let interval = HIDDEN_REFRESH_DELAY_MS;
+  if (isPageVisible()) {
+    interval = now - lastUserActivityAt <= ACTIVE_GRACE_MS
+      ? VISIBLE_REFRESH_DELAY_MS
+      : IDLE_VISIBLE_REFRESH_DELAY_MS;
+  }
   const elapsed = lastFundsLoadAt ? now - lastFundsLoadAt : interval;
   return Math.max(0, interval - elapsed);
 }
@@ -519,7 +648,7 @@ function scheduleRefreshPoll() {
   refreshPollTimer = window.setTimeout(() => {
     refreshPollTimer = null;
     pollRefreshStatus();
-  }, isPageActive() ? REFRESH_POLL_DELAY_MS : INACTIVE_REFRESH_DELAY_MS);
+  }, isPageVisible() ? REFRESH_POLL_DELAY_MS : HIDDEN_REFRESH_DELAY_MS);
 }
 
 async function pollRefreshStatus() {
@@ -532,31 +661,25 @@ async function pollRefreshStatus() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const status = await res.json();
     const data = { ...(lastFundsPayload || {}), ...status };
-    if (status.backtests_refreshing) backtestsRefreshing = true;
+    if (status.backtests_refreshing || status.backtest_rebuild_active) {
+      backtestsRefreshing = true;
+    }
     const refreshPending = isRefreshPending(status);
     renderRefreshProgress(status.refresh_progress, refreshPending);
     renderRefreshState(data);
     backtestRefreshBtn.disabled = backtestRefreshInFlight || backtestsRefreshing;
-    if (refreshPending) {
-      scheduleRefreshPoll();
+    if (
+      !refreshPending ||
+      status.last_realtime_quotes_completed_at !== lastFundsPayload?.last_realtime_quotes_completed_at
+    ) {
+      loadFunds({ snapshotOnly: true });
     } else {
-      loadFunds();
+      scheduleRefreshPoll();
     }
   } catch (error) {
     console.error("刷新状态读取失败", error);
     loadFunds();
   }
-}
-
-function markUserActive() {
-  const wasActive = isPageActive();
-  lastUserActivityAt = Date.now();
-  if (!wasActive && isPageActive()) {
-    clearAutoRefresh();
-    loadFunds();
-    return;
-  }
-  if (!autoRefreshTimer) scheduleAutoRefresh();
 }
 
 function handleVisibilityChange() {
@@ -569,13 +692,20 @@ function handleVisibilityChange() {
   scheduleAutoRefresh();
 }
 
+function markUserActive() {
+  const wasIdle = Date.now() - lastUserActivityAt > ACTIVE_GRACE_MS;
+  lastUserActivityAt = Date.now();
+  if (wasIdle && isPageVisible()) scheduleAutoRefresh();
+}
+
 function isRefreshPending(data) {
   return Boolean(
     data.navs_refreshing ||
       data.reports_refreshing ||
       data.quotes_refreshing ||
       data.purchase_limits_refreshing ||
-      data.backtests_refreshing
+      data.backtests_refreshing ||
+      data.backtest_rebuild_active
   );
 }
 
@@ -601,6 +731,11 @@ function compactDateText(value) {
 
 function backtestDataText(status, disabled) {
   if (disabled) return "未启用";
+  if (status?.rebuild_required) {
+    const remaining = Number(status.rebuild_remaining_count) || 0;
+    const phase = status.rebuild_active ? "升级后重建中" : "升级后等待重建";
+    return remaining ? `${phase}，剩余 ${remaining} 只` : phase;
+  }
   if (!status || status.fund_count === 0) return "无数据";
   if (status.missing_count === status.fund_count) return "无数据";
 
@@ -619,6 +754,10 @@ function backtestDataText(status, disabled) {
 
 function compactBacktestDataText(status, disabled) {
   if (disabled) return "未启用";
+  if (status?.rebuild_required) {
+    const remaining = Number(status.rebuild_remaining_count) || 0;
+    return remaining ? `重建剩${remaining}` : "待重建";
+  }
   if (!status || status.fund_count === 0) return "无数据";
   if (status.missing_count === status.fund_count) return "无数据";
 
@@ -682,8 +821,10 @@ function renderRefreshProgress(progress, pending) {
 }
 
 function renderRefreshState(data) {
-  const navRefreshTime = refreshTimeText(data.last_navs_refresh_success_at);
-  const quoteRefreshTime = refreshTimeText(data.last_realtime_quotes_refresh_at);
+  const navUpdatedAt = data.last_navs_refresh_at || data.last_navs_refresh_success_at;
+  const quoteUpdatedAt = data.last_realtime_quotes_completed_at || data.last_realtime_quotes_refresh_at;
+  const navRefreshTime = refreshTimeText(navUpdatedAt);
+  const quoteRefreshTime = refreshTimeText(quoteUpdatedAt);
   const reportRefreshTime = refreshTimeText(data.last_reports_refresh_success_at);
   const backtestRefreshTime = refreshTimeText(
     data.last_incremental_backtests_refresh_at,
@@ -697,15 +838,29 @@ function renderRefreshState(data) {
     !progressLabel && data.reports_refreshing ? "持仓检查中" : "",
     !progressLabel && data.quotes_refreshing ? "行情刷新中" : "",
     !progressLabel && data.purchase_limits_refreshing ? "申购限额刷新中" : "",
-    !progressLabel && data.backtests_refreshing ? "回测刷新中" : "",
+    !progressLabel && (data.backtests_refreshing || data.backtest_rebuild_active)
+      ? data.backtest_rebuild_required
+        ? "回测升级重建中"
+        : "回测刷新中"
+      : "",
+    !progressLabel && data.backtest_rebuild_required && !data.backtest_rebuild_active
+      ? "回测等待自动重建"
+      : "",
   ]
     .filter(Boolean)
     .join("，");
-  const fullState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 持仓 ${reportRefreshTime} / 回测任务 ${backtestRefreshTime} / 回测数据 ${backtestDataRange}`;
+  const quoteStates = [
+    [data.last_realtime_quotes_no_trade_secids, "当日无成交"],
+    [data.last_realtime_quotes_missing_secids, "行情缺失/取数失败"],
+    [data.last_realtime_quotes_book_only_secids, "仅盘口"],
+    [data.last_realtime_quotes_stale_secids, "行情缓存过期"],
+  ].filter(([items]) => items?.length).map(([items, label]) => `${label} ${items.length} 个`);
+  const fullState = `净值 ${navRefreshTime} / 行情 ${quoteRefreshTime} / 持仓 ${reportRefreshTime} / 回测任务 ${backtestRefreshTime} / 回测数据 ${backtestDataRange}${quoteStates.length ? ` / ${quoteStates.join("，")}` : ""}`;
 
   const compactParts = [
-    `净值 ${compactRefreshTimeText(data.last_navs_refresh_success_at)}`,
-    `行情 ${compactRefreshTimeText(data.last_realtime_quotes_refresh_at)}`,
+    `净值 ${compactRefreshTimeText(navUpdatedAt)}`,
+    `行情 ${compactRefreshTimeText(quoteUpdatedAt)}`,
+    ...quoteStates,
     `回测 ${compactRefreshTimeText(data.last_incremental_backtests_refresh_at, data.backtests_disabled ? "未启用" : "未刷新")}`,
     `数据 ${compactBacktestDataText(data.backtest_status, data.backtests_disabled)}`,
   ];
@@ -716,7 +871,7 @@ function renderRefreshState(data) {
   );
 }
 
-async function loadFunds() {
+async function loadFunds({ snapshotOnly = false } = {}) {
   if (loadFundsInFlight) {
     loadFundsQueued = true;
     return;
@@ -726,12 +881,11 @@ async function loadFunds() {
   clearAutoRefresh();
   lastFundsLoadAt = Date.now();
   loadFundsInFlight = true;
-  refreshBtn.disabled = true;
   backtestRefreshBtn.disabled = true;
   setRefreshState("刷新中...");
 
   try {
-    const res = await fetch("/api/funds", { cache: "no-store" });
+    const res = await fetch(snapshotOnly ? "/api/funds?refresh=0" : "/api/funds", { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (!Array.isArray(data.funds)) throw new Error("返回数据格式异常");
@@ -740,7 +894,9 @@ async function loadFunds() {
     lastFundsPayload = data;
     currentFunds = data.funds;
     const wasBacktestsRefreshing = backtestsRefreshing;
-    backtestsRefreshing = Boolean(data.backtests_refreshing);
+    backtestsRefreshing = Boolean(
+      data.backtests_refreshing || data.backtest_rebuild_active
+    );
     const refreshPending = isRefreshPending(data);
     syncTypeFilters(currentFunds);
     renderFunds(getVisibleFunds());
@@ -761,7 +917,6 @@ async function loadFunds() {
     setRefreshState(`刷新失败：${error?.message || "未知错误"}`);
   } finally {
     loadFundsInFlight = false;
-    refreshBtn.disabled = false;
     backtestRefreshBtn.disabled = backtestRefreshInFlight || backtestsRefreshing;
     if (loadFundsQueued) {
       loadFundsQueued = false;
@@ -769,6 +924,31 @@ async function loadFunds() {
       return;
     }
     scheduleAutoRefresh();
+  }
+}
+
+async function refreshCurrentData() {
+  refreshBtn.disabled = true;
+  clearRefreshPoll();
+  setRefreshState("启动数据刷新...");
+  try {
+    csrfToken = (await fetchJson("/api/refresh-status")).csrf_token;
+    if (!csrfToken) throw new Error("缺少本地会话令牌");
+    await fetchJson("/api/refresh/current", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-LOF-CSRF": csrfToken,
+      },
+      body: JSON.stringify({ kinds: ["navs", "quotes"] }),
+    });
+    await loadFunds({ snapshotOnly: true });
+  } catch (error) {
+    console.error("启动数据刷新失败", error);
+    setRefreshState(`启动刷新失败：${error?.message || "未知错误"}`);
+  } finally {
+    refreshBtn.disabled = false;
+    if (!autoRefreshTimer) scheduleAutoRefresh();
   }
 }
 
@@ -907,11 +1087,12 @@ function purchaseLimitMatchesFilter(fund) {
 
 function premiumMatchesFilter(fund) {
   if (premiumFilterMode === "all") return true;
-  const premium = Number(fund.premium);
-  if (!Number.isFinite(premium)) return false;
-  if (premiumFilterMode === "premiumAbove") return premium > getPremiumAboveThreshold();
-  if (premiumFilterMode === "discountBelow") return premium < -getDiscountBelowThreshold();
-  return true;
+  const { status, smart_premium: premium, smart_premium_status: signal } = fund;
+  if (status !== "ok" || !Number.isFinite(premium)) return false;
+  if (premiumFilterMode === "premiumAbove") {
+    return signal === "sell_premium" && premium > getPremiumAboveThreshold();
+  }
+  return signal === "buy_discount" && premium < -getDiscountBelowThreshold();
 }
 
 function getFundType(fund) {
@@ -1044,9 +1225,9 @@ function formatThresholdPct(input) {
 }
 
 function getPremiumFilterLabel() {
-  if (premiumFilterMode === "premiumAbove") return `仅显示溢价 > ${formatThresholdPct(premiumAboveInput)}`;
-  if (premiumFilterMode === "discountBelow") return `仅显示折价 < -${formatThresholdPct(discountBelowInput)}`;
-  return "显示全部折溢价";
+  if (premiumFilterMode === "premiumAbove") return `仅显示卖出溢价 > ${formatThresholdPct(premiumAboveInput)}`;
+  if (premiumFilterMode === "discountBelow") return `仅显示买入折价 < -${formatThresholdPct(discountBelowInput)}`;
+  return "显示全部智能折溢价";
 }
 
 function getActiveFilterSummary() {
@@ -1406,10 +1587,11 @@ function formatFilenameThreshold(input) {
 }
 
 function getExportCellColor(fund, key) {
-  if (key !== "premium" || fund.premium === null || fund.premium === undefined || Number.isNaN(fund.premium)) {
+  const value = ["buy_premium", "sell_premium"].includes(key) ? directionalPremiumValue(fund, key) : fund[key];
+  if (!["premium", "buy_premium", "sell_premium", "smart_premium"].includes(key) || !Number.isFinite(value) || (key !== "premium" && value === 0)) {
     return "#17202a";
   }
-  return fund.premium >= 0 ? "#c92a2a" : "#087f5b";
+  return value >= 0 ? "#c92a2a" : "#087f5b";
 }
 
 function wrapCanvasText(context, text, maxWidth) {
@@ -1491,7 +1673,7 @@ function drawExportTable(context, funds, x, y, width) {
   let currentX = x;
   columns.forEach((column, index) => {
     const colWidth = colWidths[index];
-    drawMultilineCell(context, [column.title], currentX, y, colWidth, headerHeight, {
+    drawMultilineCell(context, column.headerLines || [column.title], currentX, y, colWidth, headerHeight, {
       align: column.align || "center",
       color: "#415064",
       lineHeight: 16,
@@ -1634,7 +1816,7 @@ async function exportPng() {
   }
 }
 
-refreshBtn.addEventListener("click", loadFunds);
+refreshBtn.addEventListener("click", refreshCurrentData);
 backtestRefreshBtn.addEventListener("click", refreshIncrementalBacktests);
 rowsEl.addEventListener("click", (event) => {
   if (event.target.closest("a")) return;
@@ -1676,10 +1858,10 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") setColumnPickerOpen(false);
 });
+document.addEventListener("visibilitychange", handleVisibilityChange);
 ACTIVITY_EVENTS.forEach((eventName) => {
   window.addEventListener(eventName, markUserActive, { passive: true });
 });
-document.addEventListener("visibilitychange", handleVisibilityChange);
 selectAllTypesBtn.addEventListener("click", selectAllTypes);
 clearAllTypesBtn.addEventListener("click", clearAllTypes);
 showAllPurchaseLimitsBtn.addEventListener("click", () => setPurchaseLimitFilter(false));

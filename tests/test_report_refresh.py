@@ -4,6 +4,11 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from app.backtest_state import (
+    invalidate_backtests,
+    load_backtest_dirty,
+    resolve_backtest_dirty,
+)
 from app.build import refresh_reports
 from app.config import FundConfig
 from app.db import SCHEMA, get_meta, set_meta
@@ -90,17 +95,32 @@ class ReportRefreshTests(unittest.TestCase):
             insert into backtests
             (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
              error_pct, covered_weight, data_quality)
-            values ('A', '2026-07-10', '2026-07-09', 1, 1, 1, 0, 1, 'ok')
+            values ('A', '2026-07-21', '2026-07-20', 1, 1, 1, 0, 1, 'ok')
             """
         )
         con.commit()
+
+        def import_changed(*_args, **_kwargs):
+            invalidate_backtests(con, "A", "2026-07-21")
+            return {"0.A"}
+
+        def refresh_changed(*_args, **_kwargs):
+            resolve_backtest_dirty(
+                con,
+                "A",
+                full_replace=False,
+                processed_from="2026-07-20",
+                processed_through="2026-07-21",
+            )
+            return {"refreshed": [{"code": "A", "rows": 2}], "failed": []}
+
         with (
             patch.dict("app.build.FUNDS", {"A": FundConfig("A", 0)}, clear=True),
             patch("app.build.fetch_latest_regular_report", return_value=report("new-id")),
-            patch("app.build.import_fund_data", return_value={"0.A"}) as import_fund,
+            patch("app.build.import_fund_data", side_effect=import_changed) as import_fund,
             patch(
                 "app.build.refresh_incremental_backtests",
-                return_value={"refreshed": [{"code": "A", "rows": 2}], "failed": []},
+                side_effect=refresh_changed,
             ) as refresh_backtests,
         ):
             result = refresh_reports(con)
@@ -112,15 +132,10 @@ class ReportRefreshTests(unittest.TestCase):
                 **report("new-id"),
                 "report_date": "2026-06-30",
             },
-            pending_backtest_from="2026-07-20",
         )
         refresh_backtests.assert_called_once()
         self.assertEqual(refresh_backtests.call_args.args[:2], (con, ["A"]))
-        self.assertEqual(
-            refresh_backtests.call_args.kwargs["recompute_from_by_code"],
-            {"A": "2026-07-20"},
-        )
-        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 1)
+        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 0)
         self.assertEqual(result["changed"], ["A"])
         self.assertEqual(result["refreshed"], ["A"])
         self.assertEqual(result["backtests_refreshed"], [{"code": "A", "rows": 2}])
@@ -187,14 +202,20 @@ class ReportRefreshTests(unittest.TestCase):
             insert into backtests
             (fund_code, date, previous_date, previous_nav, actual_nav, estimated_nav,
              error_pct, covered_weight, data_quality)
-            values ('A', '2026-07-10', '2026-07-09', 1, 1, 7, 6, 1, 'ok')
+            values ('A', '2026-07-21', '2026-07-20', 1, 1, 7, 6, 1, 'ok')
             """
         )
         set_meta(con, "last_reports_refresh_success_at", "2026-07-01T00:00:00+00:00")
         with (
             patch.dict("app.build.FUNDS", {"A": FundConfig("A", 0)}, clear=True),
             patch("app.build.fetch_latest_regular_report", return_value=report("new-id")),
-            patch("app.build.import_fund_data", return_value={"0.A"}),
+            patch(
+                "app.build.import_fund_data",
+                side_effect=lambda *_args, **_kwargs: (
+                    invalidate_backtests(con, "A", "2026-07-21"),
+                    {"0.A"},
+                )[1],
+            ),
             patch(
                 "app.build.refresh_incremental_backtests",
                 side_effect=RuntimeError("price refresh failed"),
@@ -210,23 +231,31 @@ class ReportRefreshTests(unittest.TestCase):
             "2026-07-01T00:00:00+00:00",
         )
         self.assertIsNotNone(get_meta(con, "last_reports_refresh_partial_at"))
-        self.assertEqual(get_meta(con, "pending_report_backtests"), {"A": "2026-07-20"})
-        self.assertEqual(
-            con.execute("select estimated_nav from backtests where fund_code='A'").fetchone()[0],
-            7,
-        )
+        self.assertEqual(load_backtest_dirty(con), {"A": "2026-07-21"})
+        self.assertEqual(con.execute("select count(*) from backtests").fetchone()[0], 0)
 
     def test_pending_backtest_retries_when_announcement_is_unchanged(self) -> None:
         con = make_connection()
         seed_announcement(con, "A", "same-id")
         set_meta(con, "pending_report_backtests", {"A": "2026-07-20"})
+
+        def resolve_pending(*_args, **_kwargs):
+            resolve_backtest_dirty(
+                con,
+                "A",
+                full_replace=False,
+                processed_from="2026-07-20",
+                processed_through="2026-07-20",
+            )
+            return {"refreshed": [], "failed": []}
+
         with (
             patch.dict("app.build.FUNDS", {"A": FundConfig("A", 0)}, clear=True),
             patch("app.build.fetch_latest_regular_report", return_value=report("same-id")),
             patch("app.build.import_fund_data") as import_fund,
             patch(
                 "app.build.refresh_incremental_backtests",
-                return_value={"refreshed": [], "failed": []},
+                side_effect=resolve_pending,
             ) as refresh_backtests,
         ):
             result = refresh_reports(con)
@@ -234,7 +263,7 @@ class ReportRefreshTests(unittest.TestCase):
         import_fund.assert_not_called()
         refresh_backtests.assert_called_once()
         self.assertEqual(result["changed"], [])
-        self.assertEqual(get_meta(con, "pending_report_backtests"), {})
+        self.assertEqual(load_backtest_dirty(con), {})
 
     def test_empty_code_list_does_not_expand_to_all_funds(self) -> None:
         con = make_connection()
@@ -255,7 +284,13 @@ class ReportRefreshTests(unittest.TestCase):
         with (
             patch.dict("app.build.FUNDS", {"A": FundConfig("A", 0)}, clear=True),
             patch("app.build.fetch_latest_regular_report", return_value=report("new-id")),
-            patch("app.build.import_fund_data", return_value={"0.A"}),
+            patch(
+                "app.build.import_fund_data",
+                side_effect=lambda *_args, **_kwargs: (
+                    invalidate_backtests(con, "A", "2026-07-20"),
+                    {"0.A"},
+                )[1],
+            ),
             patch("app.build.refresh_current_valuation_base_prices") as refresh_prices,
             patch("app.build.refresh_incremental_backtests") as refresh_backtests,
         ):
@@ -263,7 +298,7 @@ class ReportRefreshTests(unittest.TestCase):
 
         refresh_prices.assert_called_once()
         refresh_backtests.assert_not_called()
-        self.assertEqual(result["pending_backtests"], {})
+        self.assertEqual(result["pending_backtests"], {"A": "2026-07-20"})
 
     def test_pending_report_refresh_becomes_a_soft_alert(self) -> None:
         con = make_connection()
@@ -276,12 +311,35 @@ class ReportRefreshTests(unittest.TestCase):
             report_refresh_errors=[
                 {"code": "A", "stage": "backtest", "error": "price gap"}
             ],
-            pending_report_backtests={"A": "2026-07-20"},
+            backtest_dirty={"A": "2026-07-20"},
         )
 
         self.assertEqual(alerts[0]["type"], "report_refresh_pending")
+        self.assertIn("回测缓存失效", alerts[0]["message"])
         self.assertEqual(alerts[0]["severity"], "warning")
-        self.assertIn("上一版可用缓存", alerts[0]["message"])
+
+    def test_cache_upgrade_rebuild_suppresses_per_fund_backtest_alerts(self) -> None:
+        con = make_connection()
+        funds = [
+            {
+                "code": "A",
+                "name": "A",
+                "type": "其他",
+                "status": "ok",
+                "missing_quotes": [],
+                "realtime_warnings": [],
+            }
+        ]
+
+        alerts = collect_data_alerts(
+            con,
+            funds,
+            latest_backtests={},
+            backtest_dirty={"A": "2026-08-20"},
+            backtest_rebuild_required=True,
+        )
+
+        self.assertEqual(alerts, [])
 
 
 if __name__ == "__main__":

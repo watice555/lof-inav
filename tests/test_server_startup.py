@@ -86,14 +86,19 @@ class ServerStartupTests(unittest.TestCase):
             patch("app.server.should_open_browser", return_value=True),
             patch("app.server.write_server_pid", return_value="token"),
             patch("app.server.remove_server_pid"),
+            patch(
+                "app.server.schedule_incremental_backtest_refresh",
+                return_value=(False, "not required"),
+            ) as schedule_backtests,
             patch("app.server.threading.Thread") as thread,
         ):
-            server.main()
+            server.run_server()
 
             self.assertEqual(server.URL, "http://127.0.0.1:8001")
             self.assertIn("127.0.0.1:8001", server.ALLOWED_LOCAL_HOSTS)
             self.assertEqual(thread.call_args.kwargs["args"], (server.URL,))
             thread.return_value.start.assert_called_once_with()
+            schedule_backtests.assert_called_once_with(require_rebuild=True)
 
     def test_default_port_falls_back_when_used_by_another_program(self) -> None:
         occupied = socket.socket()
@@ -140,6 +145,36 @@ class ServerStartupTests(unittest.TestCase):
                 self.assertTrue(pid_path.exists())
                 server.remove_server_pid(token)
                 self.assertFalse(pid_path.exists())
+
+    def test_duplicate_launch_reuses_existing_server_in_same_data_directory(self) -> None:
+        with (
+            TemporaryDirectory() as directory,
+            patch("app.server.PID_PATH", Path(directory) / "lof_inav.pid"),
+            patch("app.server.PORT", 8123),
+            patch("app.server.should_open_browser", return_value=True),
+            patch("app.server.webbrowser.open") as open_browser,
+            patch("app.server.run_server") as run_server,
+        ):
+            with server.server_instance_lock() as acquired:
+                self.assertTrue(acquired)
+                server.write_server_pid()
+                server.main()
+                run_server.assert_not_called()
+                open_browser.assert_called_once_with(f"http://{server.HOST}:8123")
+            server.main()
+            run_server.assert_called_once_with()
+
+    def test_refresh_invalidation_prevents_old_requests_from_repopulating_cache(self) -> None:
+        server.invalidate_funds_payload_cache()
+        self.addCleanup(server.invalidate_funds_payload_cache)
+        cached, generation = server.get_cached_funds_payload()
+        self.assertIsNone(cached)
+        server.invalidate_funds_payload_cache()
+        server.cache_funds_payload({"funds": ["old"]}, generation)
+        cached, generation = server.get_cached_funds_payload()
+        self.assertIsNone(cached)
+        server.cache_funds_payload({"funds": ["new"]}, generation)
+        self.assertEqual(server.get_cached_funds_payload()[0], {"funds": ["new"]})
 
     def test_remote_bind_is_rejected(self) -> None:
         server.require_loopback_host("127.0.0.1")
@@ -193,6 +228,67 @@ class ServerStartupTests(unittest.TestCase):
         self.assertIs(caches[0], caches[1])
         self.assertEqual(len(caches[0]), 2)
         self.assertEqual(len(payloads[0]["rows"]), 2)
+
+    def test_current_refresh_forces_requested_navs_and_quotes(self) -> None:
+        responses = []
+        handler = object.__new__(server.Handler)
+        handler.read_json_body = lambda: {"kinds": ["navs", "quotes"]}
+        handler.json = lambda payload, status=200: responses.append((status, payload))
+        with (
+            patch("app.server.connect", side_effect=fake_connection),
+            patch("app.server.prefetch_intraday_inputs", return_value=object()),
+            patch("app.server.collect_realtime_secids", return_value=["0.A", "1.B"]),
+            patch("app.server.schedule_nav_refresh", return_value=True) as nav_refresh,
+            patch("app.server.schedule_quote_refresh", return_value=True) as quote_refresh,
+            patch("app.server.attach_refresh_runtime_state", side_effect=lambda payload: payload),
+        ):
+            handler.handle_current_refresh()
+
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(
+            responses[0][1]["states"],
+            {"navs": "started", "quotes": "started"},
+        )
+        nav_refresh.assert_called_once_with(update_backtests=False, force=True)
+        quote_refresh.assert_called_once_with(["0.A", "1.B"], force=True)
+
+    def test_refresh_status_exposes_csrf_without_triggering_fund_refresh(self) -> None:
+        payloads = []
+        handler = object.__new__(server.Handler)
+        handler.json = payloads.append
+        with (
+            patch("app.server.connect", side_effect=fake_connection),
+            patch("app.server.get_meta", return_value=None),
+            patch("app.server.load_backtest_dirty", return_value={}),
+            patch("app.server.backtest_refresh_lease_active", return_value=False),
+            patch("app.server.collect_realtime_secids", return_value=[]),
+            patch("app.server.quote_status_payload", return_value={}),
+            patch("app.server.attach_refresh_runtime_state", side_effect=lambda payload: payload),
+        ):
+            handler.handle_refresh_status()
+
+        self.assertEqual(payloads[0]["csrf_token"], server.CSRF_TOKEN)
+
+    def test_funds_snapshot_query_disables_background_refresh(self) -> None:
+        handler = object.__new__(server.Handler)
+        handler.path = "/api/funds?refresh=0"
+        calls = []
+        handler.handle_funds = lambda **kwargs: calls.append(kwargs)
+
+        handler.do_GET()
+
+        self.assertEqual(calls, [{"allow_background_refresh": False}])
+
+    def test_current_refresh_rejects_unknown_refresh_kind(self) -> None:
+        responses = []
+        handler = object.__new__(server.Handler)
+        handler.read_json_body = lambda: {"kinds": ["everything"]}
+        handler.json = lambda payload, status=200: responses.append((status, payload))
+
+        handler.handle_current_refresh()
+
+        self.assertEqual(responses[0][0], 400)
+        self.assertIn("error", responses[0][1])
 
 
 if __name__ == "__main__":

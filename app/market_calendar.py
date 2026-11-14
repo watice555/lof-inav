@@ -83,7 +83,7 @@ HK_HOLIDAYS = {
 }
 
 CN_HOLIDAYS = {
-    # SSE annual market-closure notices. Weekends are handled separately.
+    # SSE annual market-closure notices through 2026. Weekends are handled separately.
     "2024-01-01",
     "2024-02-09",
     "2024-02-12",
@@ -140,11 +140,35 @@ CN_HOLIDAYS = {
     "2026-10-05",
     "2026-10-06",
     "2026-10-07",
+    # Preliminary 2027 closures derived from the State Council's current holiday
+    # rules. Confirm these dates after the SSE publishes its annual closure notice.
+    "2027-01-01",
+    "2027-02-05",
+    "2027-02-08",
+    "2027-02-09",
+    "2027-02-10",
+    "2027-02-11",
+    "2027-02-12",
+    "2027-04-05",
+    "2027-05-03",
+    "2027-05-04",
+    "2027-05-05",
+    "2027-06-09",
+    "2027-09-15",
+    "2027-10-01",
+    "2027-10-04",
+    "2027-10-05",
+    "2027-10-06",
+    "2027-10-07",
 }
 
 KNOWN_MARKET_CALENDAR_YEARS = {
-    "CN": frozenset({2024, 2025, 2026}),
+    "CN": frozenset({2024, 2025, 2026, 2027}),
     "HK": frozenset({2024, 2025, 2026, 2027}),
+}
+
+PROVISIONAL_MARKET_CALENDAR_YEARS = {
+    "CN": frozenset({2027}),
 }
 
 
@@ -202,6 +226,10 @@ def calendar_year_is_known(market: str, year: int) -> bool:
     if market == "US":
         return True
     return year in KNOWN_MARKET_CALENDAR_YEARS.get(market, ())
+
+
+def calendar_year_is_provisional(market: str, year: int) -> bool:
+    return year in PROVISIONAL_MARKET_CALENDAR_YEARS.get(market, ())
 
 
 def _parse_date(value: str) -> date | None:

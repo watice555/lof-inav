@@ -352,8 +352,13 @@ error_pct = estimated_nav / actual_nav - 1
 前端位于 [`public/`](public/)，服务端由 [`app/server.py`](app/server.py) 提供接口。
 
 - `GET /api/funds`：基金列表、估值、折溢价、场内交易 `trade_secid`、公告、申购限额、回测摘要。
+- `GET /api/funds?refresh=0`：读取同一基金快照但不调度任何后台刷新，供已经显式刷新完成的自动化任务使用。
 - `GET /api/funds/{code}/holdings`：最新一期持仓/代理资产及对应行情。
 - `GET /api/funds/{code}/backtest`：最多最近 30 条回测明细，默认构建产生 7 条。
+- `GET /api/refresh-status`：刷新时间、运行状态、最近净值错误和行情缺失标的。
+- `POST /api/refresh/current`：强制刷新净值和当前估值所需行情；需要 `/api/funds` 返回的 `csrf_token`，并通过 `X-LOF-CSRF` 请求头提交。
+
+交易日定时智能折溢价报告由 [`scripts/report_premium_alerts.py`](scripts/report_premium_alerts.py) 提供。脚本会强制刷新并等待完成，默认筛选卖出溢价超过 1.5% 或买入折价低于 -1.5% 的基金，与页面使用相同的智能折溢价信号（卖出看买一，买入看卖一）。报告排除暂停申购和本轮净值刷新失败的基金，并提示行情缺口和低取价覆盖。macOS 可安装独立的 14:30 `launchd` 任务，它按需启停本地服务且不依赖 Codex 额度；Bot 配置、试运行及各平台定时方法见 [`docs/premium_alert_bot.md`](docs/premium_alert_bot.md)。
 
 页面功能：
 

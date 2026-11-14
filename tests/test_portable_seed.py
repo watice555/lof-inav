@@ -6,8 +6,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from app.backtest_state import (
+    BACKTEST_DIRTY_META_KEY,
+    LEGACY_BACKTEST_DIRTY_META_KEY,
+)
 from app.config import FundConfig
-from app.db import SCHEMA, SCHEMA_VERSION, get_meta, set_meta
+from app.db import (
+    BACKTEST_CACHE_VERSION,
+    SCHEMA,
+    SCHEMA_VERSION,
+    get_meta,
+    set_meta,
+)
 from app.runtime import install_seed_database
 from scripts.create_seed_database import SeedRetention, create_seed_database
 
@@ -56,11 +66,13 @@ def create_ready_source(path: Path) -> None:
             )
     set_meta(con, "schema_version", SCHEMA_VERSION)
     set_meta(con, "historical_price_cache_version", 3)
-    set_meta(con, "backtest_cache_version", 5)
+    set_meta(con, "backtest_cache_version", BACKTEST_CACHE_VERSION)
     set_meta(con, "config_hash", "expected")
     set_meta(con, "build_state", "complete")
     set_meta(con, "last_navs_refresh_errors", [{"error": "private machine detail"}])
     set_meta(con, "last_navs_refresh_success_at", "2026-07-06T00:00:00+00:00")
+    set_meta(con, BACKTEST_DIRTY_META_KEY, {"A": "2026-07-05"})
+    set_meta(con, LEGACY_BACKTEST_DIRTY_META_KEY, {"B": "2026-07-04"})
     con.commit()
     con.close()
 
@@ -128,6 +140,8 @@ class SeedDatabaseBuildTests(unittest.TestCase):
                     "2026-07-06T00:00:00+00:00",
                 )
                 self.assertEqual(get_meta(con, "seed_format_version"), 1)
+                self.assertEqual(get_meta(con, BACKTEST_DIRTY_META_KEY), {})
+                self.assertIsNone(get_meta(con, LEGACY_BACKTEST_DIRTY_META_KEY))
                 self.assertEqual(con.execute("pragma integrity_check").fetchone()[0], "ok")
             finally:
                 con.close()

@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 from urllib3.exceptions import DecodeError, ProtocolError, ReadTimeoutError
 from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from .config import EASTMONEY_HEADERS, SINA_PRICE_SYMBOLS, YAHOO_PRICE_SYMBOLS
+from .config import EASTMONEY_HEADERS, FUNDS, SINA_PRICE_SYMBOLS, YAHOO_PRICE_SYMBOLS
 from .market_calendar import historical_price_market
 
 
@@ -654,12 +654,36 @@ def fetch_realtime_quotes(
                 8 + round(62 * completed / len(batches)),
                 f"东方财富 {completed}/{len(batches)} 批",
             )
-    seen = {row["secid"] for row in rows}
-    cn_fallback = [secid for secid in secids if secid not in seen and is_cn_exchange_secid(secid)]
+    # Invalid prices must not suppress fallback. Fund quotes also need Sina's
+    # share-denominated top-of-book, which the Eastmoney batch does not supply.
+    quotes = {
+        row["secid"]: normalized
+        for row in rows
+        if (normalized := normalize_realtime_quote(row)) is not None
+    }
+    fund_secids = {f"{cfg.exchange_market}.{code}" for code, cfg in FUNDS.items()}
+    cn_fallback = [
+        secid for secid in secids
+        if is_cn_exchange_secid(secid) and (secid not in quotes or secid in fund_secids)
+    ]
     cn_batches = [cn_fallback[i : i + 100] for i in range(0, len(cn_fallback), 100)]
     for index, batch in enumerate(cn_batches, start=1):
         try:
-            rows.extend(sina_cn_realtime_quotes(batch))
+            for row in sina_cn_realtime_quotes(batch):
+                normalized = normalize_realtime_quote(row)
+                if normalized is None:
+                    continue
+                existing = quotes.get(row["secid"])
+                if existing:
+                    old_time = existing.get("quote_time")
+                    new_time = normalized.get("quote_time")
+                    if old_time and (not new_time or datetime.fromisoformat(new_time) < datetime.fromisoformat(old_time)):
+                        if row["secid"] not in fund_secids or not _same_fund_closing_snapshot(existing, normalized):
+                            continue
+                    # A malformed trade field cannot replace a usable trade.
+                    if normalized["trade_status"] == "book_only" and existing["price"] is not None:
+                        continue
+                quotes[row["secid"]] = normalized
         except (RequestException, ValueError, IndexError) as exc:
             record_realtime_source_error(diagnostics, "sina_cn_batch", batch, exc)
         emit_realtime_progress(
@@ -668,7 +692,8 @@ def fetch_realtime_quotes(
             70 + round(12 * index / len(cn_batches)),
             f"新浪A股 {index}/{len(cn_batches)} 批",
         )
-    seen = {row["secid"] for row in rows}
+    rows = list(quotes.values())
+    seen = set(quotes)
     fallback_secids = [secid for secid in secids if secid not in seen]
     with ThreadPoolExecutor(max_workers=min(4, len(fallback_secids) or 1)) as executor:
         futures = {
@@ -698,6 +723,21 @@ def fetch_realtime_quotes(
             )
     emit_realtime_progress(progress_callback, "quotes_source_done", 98, f"源请求完成，返回 {len(rows)} 条")
     return rows
+
+
+def _same_fund_closing_snapshot(trade: dict[str, Any], book: dict[str, Any]) -> bool:
+    """Accept the exchange closing book when vendors timestamp the same close differently."""
+    if (
+        not book["quote_time"]
+        or trade["session_date"] != book["session_date"]
+        or not (book["bid_price"] or book["ask_price"])
+    ):
+        return False
+    book_time = datetime.fromisoformat(book["quote_time"]).astimezone(CHINA_TZ)
+    if (book_time.hour, book_time.minute) != (15, 0):
+        return False
+    closing_price = book["previous_close"] if book["trade_status"] == "no_trade" else book["price"]
+    return closing_price is not None and trade["price"] == closing_price
 
 
 def special_realtime_quote(
@@ -952,9 +992,28 @@ def normalize_realtime_quote(row: dict[str, Any]) -> dict[str, Any] | None:
         market = int(row.get("market", market_text))
     except (TypeError, ValueError):
         return None
-    price = _to_float(row.get("price"))
-    if price is None or price <= 0 or not math.isfinite(price):
+    price = _finite_quote_number(row.get("price"), positive=True)
+    volume = _finite_quote_number(row.get("volume"))
+    quote_time = row.get("quote_time")
+    session_date = quote_session_date(secid, quote_time)
+    book = {}
+    for side in ("bid", "ask"):
+        side_price = _finite_quote_number(row.get(f"{side}_price"), positive=True)
+        side_volume = _finite_quote_number(row.get(f"{side}_volume"), positive=True)
+        if not session_date or side_price is None or side_volume is None or not side_volume.is_integer():
+            side_price = side_volume = None
+        book[f"{side}_price"] = side_price
+        book[f"{side}_volume"] = int(side_volume) if side_volume is not None else None
+    has_book = book["bid_price"] is not None or book["ask_price"] is not None
+    # Zero volume can accompany a provider's previous-close placeholder.
+    # Never present that placeholder as a trade, or calculate a premium from it.
+    if volume == 0:
+        price = None
+    if price is None and not has_book:
         return None
+    trade_status = "traded" if price is not None else "book_only"
+    if price is None and volume == 0:
+        trade_status = "no_trade"
     previous_close = _to_float(row.get("previous_close"))
     if previous_close is not None and (
         previous_close <= 0 or not math.isfinite(previous_close)
@@ -963,8 +1022,8 @@ def normalize_realtime_quote(row: dict[str, Any]) -> dict[str, Any] | None:
     pct = _to_float(row.get("pct"))
     if pct is not None and (not math.isfinite(pct) or abs(pct) > 1000):
         pct = None
-    quote_time = row.get("quote_time")
-    session_date = quote_session_date(secid, quote_time)
+    if price is None:
+        pct = None
     return {
         "secid": secid,
         "symbol": str(row.get("symbol") or default_symbol),
@@ -975,7 +1034,17 @@ def normalize_realtime_quote(row: dict[str, Any]) -> dict[str, Any] | None:
         "previous_close": previous_close,
         "quote_time": quote_time,
         "session_date": session_date,
+        "volume": volume,
+        "trade_status": trade_status,
+        **book,
     }
+
+
+def _finite_quote_number(value: Any, *, positive: bool = False) -> float | None:
+    number = _to_float(value)
+    if number is None or not math.isfinite(number) or number < 0 or (positive and number == 0):
+        return None
+    return number
 
 
 def quote_session_date(secid: str, quote_time: Any) -> str | None:
@@ -1719,7 +1788,11 @@ def sina_cn_realtime_quotes(secids: list[str]) -> list[dict[str, Any]]:
         secid = symbols.get(match.group(1))
         if not secid or not match.group(2):
             continue
-        quote = _sina_cn_quote_from_parts(secid, match.group(2).split(","))
+        try:
+            quote = _sina_cn_quote_from_parts(secid, match.group(2).split(","))
+        except (ValueError, IndexError):
+            # One malformed symbol must not discard the rest of the batch.
+            continue
         if quote:
             rows.append(quote)
     return rows
@@ -1731,8 +1804,6 @@ def _sina_cn_quote_from_parts(secid: str, parts: list[str]) -> dict[str, Any] | 
         return None
     previous = _to_float(parts[2])
     price = _to_float(parts[3])
-    if price is None or previous is None or previous <= 0:
-        return None
     quote_time = None
     if parts[30] and parts[31]:
         quote_time = datetime.strptime(f"{parts[30]} {parts[31]}", "%Y-%m-%d %H:%M:%S").replace(
@@ -1744,9 +1815,15 @@ def _sina_cn_quote_from_parts(secid: str, parts: list[str]) -> dict[str, Any] | 
         "market": int(market),
         "name": parts[0] or symbol,
         "price": price,
-        "pct": (price / previous - 1) * 100,
+        "pct": (price / previous - 1) * 100 if price and previous and previous > 0 else None,
         "previous_close": previous,
         "quote_time": quote_time,
+        "volume": _to_float(parts[8]),
+        # Sina CN volumes are shares (fund units), not board lots.
+        "bid_volume": _to_float(parts[10]),
+        "bid_price": _to_float(parts[11]),
+        "ask_volume": _to_float(parts[20]),
+        "ask_price": _to_float(parts[21]),
     }
 
 

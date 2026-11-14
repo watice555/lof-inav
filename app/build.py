@@ -7,8 +7,19 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
+from .backtest_metadata import (
+    BACKTEST_DIRTY_META_KEY,
+    BACKTEST_REBUILD_LAST_ATTEMPT_META_KEY,
+    BACKTEST_REBUILD_REQUIRED_META_KEY,
+    LEGACY_BACKTEST_DIRTY_META_KEY,
+)
+from .backtest_state import (
+    clear_backtest_rebuild_required_if_resolved,
+    invalidate_backtests,
+    load_backtest_dirty,
+)
 from .config import FUNDS, US_EQUITY_CLOSE_MARKS
-from .db import connect, get_meta, init_db, mark_build_finished, mark_build_started, set_meta
+from .db import connect, get_meta, init_db, mark_build_finished, mark_build_started, quote_fetch_missing_secids, set_meta
 from .market_calendar import expected_market_closure_gap
 from .sources import (
     DAILY_PRICE_BATCH_DEADLINE_SECONDS,
@@ -244,6 +255,8 @@ def build_all(
             import_failed=import_failed,
             backtests_failed=backtests_failed,
         )
+        if update_backtests and not import_failed and not backtests_failed:
+            clear_backtest_rebuild_required_if_resolved(con, set(FUNDS))
     return {
         "imported": imported,
         "import_failed": import_failed,
@@ -264,6 +277,17 @@ def prepare_build(
     set_meta(con, "backtests_disabled", not update_backtests)
     if not update_backtests:
         con.execute("delete from backtests")
+        con.execute(
+            "delete from metadata where key in (?, ?, ?, ?, ?, ?)",
+            (
+                BACKTEST_DIRTY_META_KEY,
+                LEGACY_BACKTEST_DIRTY_META_KEY,
+                BACKTEST_REBUILD_REQUIRED_META_KEY,
+                BACKTEST_REBUILD_LAST_ATTEMPT_META_KEY,
+                "last_incremental_backtests_refresh_at",
+                "last_incremental_backtests_refresh_errors",
+            ),
+        )
 
 
 def refresh_purchase_limits(con) -> dict[str, Any]:
@@ -353,16 +377,6 @@ def refresh_reports(
             "select fund_code, announcement_id, title, publish_date from fund_announcements"
         )
     }
-    raw_pending = get_meta(con, "pending_report_backtests", {}) or {}
-    pending_backtests = (
-        {
-            str(code): str(recompute_from)
-            for code, recompute_from in raw_pending.items()
-            if code in FUNDS and recompute_from
-        }
-        if isinstance(raw_pending, dict)
-        else {}
-    )
     reports: dict[str, dict[str, str]] = {}
     failed: list[dict[str, str]] = []
     emit_progress(
@@ -456,11 +470,9 @@ def refresh_reports(
                 con,
                 code,
                 latest_report=reports[code],
-                pending_backtest_from=reports[code]["publish_date"],
             )
             con.commit()
             refreshed.append(code)
-            pending_backtests[code] = reports[code]["publish_date"]
         except Exception as exc:
             con.rollback()
             failed.append(
@@ -479,6 +491,11 @@ def refresh_reports(
             message=code,
         )
 
+    pending_backtests = {
+        code: from_date
+        for code, from_date in load_backtest_dirty(con).items()
+        if code in FUNDS
+    }
     backtests = {"refreshed": [], "failed": []}
     backtest_codes = [code for code in valid_codes if code in pending_backtests]
     backtest_failed: list[dict[str, str]] = []
@@ -495,9 +512,6 @@ def refresh_reports(
                 backtests = refresh_incremental_backtests(
                     con,
                     backtest_codes,
-                    recompute_from_by_code={
-                        code: pending_backtests[code] for code in backtest_codes
-                    },
                     progress_callback=progress_callback,
                 )
                 backtest_failed = [
@@ -514,16 +528,16 @@ def refresh_reports(
                 }
                 for code in backtest_codes
             ]
-        failed_backtest_codes = {item["code"] for item in backtest_failed}
-        for code in backtest_codes:
-            if code not in failed_backtest_codes:
-                pending_backtests.pop(code, None)
+        pending_backtests = {
+            code: from_date
+            for code, from_date in load_backtest_dirty(con).items()
+            if code in FUNDS
+        }
 
     all_failed = [*failed, *backtest_failed]
     failed_codes = sorted({item["code"] for item in all_failed})
 
     completed_at = utc_now()
-    set_meta(con, "pending_report_backtests", pending_backtests)
     set_meta(con, "last_reports_refresh_completed_at", completed_at)
     set_meta(con, "last_reports_refresh_errors", all_failed)
     set_meta(
@@ -593,7 +607,6 @@ def refresh_navs(
     checked = []
     updated = []
     failed = []
-    revised_from_by_code: dict[str, str] = {}
     emit_progress(
         progress_callback,
         phase="navs",
@@ -642,8 +655,6 @@ def refresh_navs(
         checked.append(checked_item)
         if change["changed_rows"]:
             updated.append({**checked_item, **change})
-        if change["earliest_revised_date"]:
-            revised_from_by_code[code] = change["earliest_revised_date"]
         con.commit()
         emit_progress(
             progress_callback,
@@ -659,15 +670,9 @@ def refresh_navs(
         backtests = refresh_incremental_backtests(
             con,
             [item["code"] for item in checked],
-            recompute_from_by_code=revised_from_by_code,
             progress_callback=progress_callback,
         )
     elif checked:
-        for code, revised_from in revised_from_by_code.items():
-            con.execute(
-                "delete from backtests where fund_code = ? and date >= ?",
-                (code, revised_from),
-            )
         refresh_current_valuation_base_prices(
             con,
             [item["code"] for item in checked],
@@ -706,7 +711,6 @@ def refresh_incremental_backtests(
     con,
     codes: list[str] | None = None,
     progress_callback: ProgressCallback | None = None,
-    recompute_from_by_code: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     started = time.monotonic()
     target_codes = codes or list(FUNDS)
@@ -715,7 +719,7 @@ def refresh_incremental_backtests(
     stale_codes = []
     price_only_codes = []
     cutoff_by_code: dict[str, str | None] = {}
-    recompute_from_by_code = recompute_from_by_code or {}
+    dirty_from_by_code = load_backtest_dirty(con)
     emit_progress(
         progress_callback,
         phase="backtest_scan",
@@ -744,10 +748,10 @@ def refresh_incremental_backtests(
             # first import, so an append-only cache is not sufficient.
             stale_codes.append(code)
             normal_cutoff = incremental_backtest_cutoff_for_fund(con, code)
-            revised_from = recompute_from_by_code.get(code)
+            dirty_from = dirty_from_by_code.get(code)
             cutoff_by_code[code] = (
-                revised_from
-                if revised_from and (not normal_cutoff or revised_from < normal_cutoff)
+                dirty_from
+                if dirty_from and (not normal_cutoff or dirty_from < normal_cutoff)
                 else normal_cutoff
             )
         except Exception as exc:
@@ -858,6 +862,8 @@ def refresh_incremental_backtests(
     now = utc_now()
     set_meta(con, "last_incremental_backtests_refresh_at", now)
     set_meta(con, "last_incremental_backtests_refresh_errors", failed)
+    if not failed:
+        clear_backtest_rebuild_required_if_resolved(con, set(FUNDS))
     LOGGER.info(
         "Incremental backtests completed in %.1fs: target=%s stale=%s refreshed=%s failed=%s",
         time.monotonic() - started,
@@ -1028,12 +1034,13 @@ def incremental_backtest_price_targets_for_fund(
             """
             select * from navs
             where fund_code = ?
-              and date >= (
-                select max(date) from navs where fund_code = ? and date <= ?
+              and date >= coalesce(
+                (select max(date) from navs where fund_code = ? and date <= ?),
+                (select min(date) from navs where fund_code = ?)
               )
             order by date asc
             """,
-            (code, code, anchor_date),
+            (code, code, anchor_date, code),
         ).fetchall()
     else:
         navs = con.execute(
@@ -1105,7 +1112,6 @@ def import_fund_data(
     code: str,
     years: list[int] | None = None,
     latest_report: dict[str, str] | None = None,
-    pending_backtest_from: str | None = None,
 ) -> set[str]:
     if code not in FUNDS:
         raise KeyError(f"fund {code} is not configured")
@@ -1155,6 +1161,17 @@ def import_fund_data(
     secids: set[str] = {fund_secid(code)}
     con.execute("savepoint replace_fund_snapshot")
     try:
+        old_holding_snapshot = normalized_holding_snapshot(con, code)
+        persisted_backtests = [
+            (row["date"], row["previous_date"])
+            for row in con.execute(
+                """
+                select date, previous_date from backtests
+                where fund_code = ? order by date
+                """,
+                (code,),
+            )
+        ]
         con.execute(
             """
             insert or replace into funds(code, name, exchange_market, fund_type, note, updated_at)
@@ -1179,16 +1196,6 @@ def import_fund_data(
                     utc_now(),
                 ),
             )
-        if pending_backtest_from:
-            pending = get_meta(con, "pending_report_backtests", {}) or {}
-            if not isinstance(pending, dict):
-                pending = {}
-            set_meta(
-                con,
-                "pending_report_backtests",
-                {**pending, code: pending_backtest_from},
-            )
-
         con.execute("delete from holdings where fund_code = ?", (code,))
         if cfg.manual_holdings_mode == "replace":
             for holding in expanded_manual_items:
@@ -1289,6 +1296,14 @@ def import_fund_data(
                 raise ValueError(
                     f"empty holding snapshot for report {expected_report_date}"
                 )
+        new_holding_snapshot = normalized_holding_snapshot(con, code)
+        earliest_affected_date = earliest_backtest_affected_by_holdings(
+            old_holding_snapshot,
+            new_holding_snapshot,
+            persisted_backtests,
+        )
+        if earliest_affected_date:
+            invalidate_backtests(con, code, earliest_affected_date)
     except Exception:
         con.execute("rollback to replace_fund_snapshot")
         con.execute("release replace_fund_snapshot")
@@ -1296,6 +1311,71 @@ def import_fund_data(
     else:
         con.execute("release replace_fund_snapshot")
     return secids
+
+
+HoldingSignature = tuple[tuple[str, str | None, str, str, str], ...]
+HoldingSnapshot = dict[str, HoldingSignature]
+
+
+def normalized_holding_snapshot(con, code: str) -> HoldingSnapshot:
+    """Capture valuation-relevant holding rows grouped by report date."""
+    grouped: dict[str, list[tuple[str, str | None, str, str, str]]] = {}
+    for row in con.execute(
+        """
+        select report_date, publish_date, secid, weight, source
+        from holdings
+        where fund_code = ? and weight > 0
+        """,
+        (code,),
+    ):
+        report_date = str(row["report_date"])
+        grouped.setdefault(report_date, []).append(
+            (
+                report_date,
+                str(row["publish_date"]) if row["publish_date"] is not None else None,
+                str(row["secid"]),
+                format(float(row["weight"]), ".12g"),
+                str(row["source"] or ""),
+            )
+        )
+    return {
+        report_date: tuple(
+            sorted(
+                rows,
+                key=lambda row: (row[0], row[1] or "", row[2], row[3], row[4]),
+            )
+        )
+        for report_date, rows in grouped.items()
+    }
+
+
+def holding_signature_available_on(
+    snapshot: HoldingSnapshot,
+    nav_date: str,
+) -> HoldingSignature:
+    eligible_report_dates = [
+        report_date
+        for report_date, rows in snapshot.items()
+        if rows
+        and all(row[1] is not None for row in rows)
+        and max(str(row[1]) for row in rows) <= nav_date
+    ]
+    if not eligible_report_dates:
+        return ()
+    return snapshot[max(eligible_report_dates)]
+
+
+def earliest_backtest_affected_by_holdings(
+    old_snapshot: HoldingSnapshot,
+    new_snapshot: HoldingSnapshot,
+    persisted_backtests: list[tuple[str, str]],
+) -> str | None:
+    for backtest_date, previous_date in persisted_backtests:
+        if holding_signature_available_on(
+            old_snapshot, previous_date
+        ) != holding_signature_available_on(new_snapshot, previous_date):
+            return backtest_date
+    return None
 
 
 def upsert_nav_rows(con, code: str, navs: list[dict]) -> dict[str, Any]:
@@ -1310,8 +1390,10 @@ def upsert_nav_rows(con, code: str, navs: list[dict]) -> dict[str, Any]:
             (code,),
         )
     }
+    latest_existing_date = max(existing) if existing else None
     changed = []
     revised_dates = []
+    historical_insert_dates = []
     inserted_rows = 0
     for nav in normalized:
         old = existing.get(nav["date"])
@@ -1324,25 +1406,63 @@ def upsert_nav_rows(con, code: str, navs: list[dict]) -> dict[str, Any]:
             revised_dates.append(nav["date"])
         else:
             inserted_rows += 1
+            if latest_existing_date and nav["date"] <= latest_existing_date:
+                historical_insert_dates.append(nav["date"])
         changed.append(nav)
 
-    for nav in changed:
-        con.execute(
-            """
-            insert into navs(fund_code, date, nav, distribution, return_pct)
-            values (?, ?, ?, ?, ?)
-            on conflict(fund_code, date) do update set
-              nav = excluded.nav,
-              distribution = excluded.distribution,
-              return_pct = excluded.return_pct
-            """,
-            (code, nav["date"], nav["nav"], nav["distribution"], nav["return_pct"]),
-        )
+    invalidating_dates = [*revised_dates, *historical_insert_dates]
+    invalidating_candidate = min(invalidating_dates) if invalidating_dates else None
+    earliest_invalidating_date = None
+    if changed and not con.in_transaction:
+        # A top-level SAVEPOINT is committed by RELEASE in SQLite. Preserve
+        # this helper's historical caller-owned transaction semantics by
+        # opening an outer transaction when it is invoked standalone.
+        con.execute("begin")
+    con.execute("savepoint upsert_nav_rows")
+    try:
+        for nav in changed:
+            con.execute(
+                """
+                insert into navs(fund_code, date, nav, distribution, return_pct)
+                values (?, ?, ?, ?, ?)
+                on conflict(fund_code,date) do update set
+                  nav = excluded.nav,
+                  distribution = excluded.distribution,
+                  return_pct = excluded.return_pct
+                """,
+                (
+                    code,
+                    nav["date"],
+                    nav["nav"],
+                    nav["distribution"],
+                    nav["return_pct"],
+                ),
+            )
+        if invalidating_candidate:
+            affected = con.execute(
+                """
+                select 1 from backtests
+                where fund_code = ? and date >= ?
+                limit 1
+                """,
+                (code, invalidating_candidate),
+            ).fetchone()
+            if affected:
+                invalidate_backtests(con, code, invalidating_candidate)
+                earliest_invalidating_date = invalidating_candidate
+    except Exception:
+        con.execute("rollback to upsert_nav_rows")
+        con.execute("release upsert_nav_rows")
+        raise
+    else:
+        con.execute("release upsert_nav_rows")
     return {
         "changed_rows": len(changed),
         "inserted_rows": inserted_rows,
         "revised_rows": len(revised_dates),
         "earliest_revised_date": min(revised_dates) if revised_dates else None,
+        "historical_inserted_rows": len(historical_insert_dates),
+        "earliest_invalidating_date": earliest_invalidating_date,
     }
 
 
@@ -1817,7 +1937,7 @@ def refresh_quotes(
             diagnostics=source_diagnostics,
         ):
             normalized = normalize_realtime_quote(quote)
-            if normalized is None:
+            if normalized is None or normalized["secid"] not in remaining:
                 continue
             saved.add(normalized["secid"])
             quotes_by_secid[normalized["secid"]] = normalized
@@ -1855,9 +1975,11 @@ def refresh_quotes(
             """
             insert into quotes
             (secid, symbol, market, name, price, pct, previous_close, quote_time,
-             session_date, last_attempt_at, last_success_at, fetch_status, updated_at)
+             session_date, volume, bid_price, bid_volume, ask_price, ask_volume, trade_status,
+             last_attempt_at, last_success_at, fetch_status, updated_at)
             values (:secid, :symbol, :market, :name, :price, :pct, :previous_close, :quote_time,
-                    :session_date, :last_attempt_at, :last_success_at, 'ok', :updated_at)
+                    :session_date, :volume, :bid_price, :bid_volume, :ask_price, :ask_volume, :trade_status,
+                    :last_attempt_at, :last_success_at, 'ok', :updated_at)
             on conflict(secid) do update set
               symbol = excluded.symbol,
               market = excluded.market,
@@ -1867,6 +1989,12 @@ def refresh_quotes(
               previous_close = excluded.previous_close,
               quote_time = excluded.quote_time,
               session_date = excluded.session_date,
+              volume = excluded.volume,
+              bid_price = excluded.bid_price,
+              bid_volume = excluded.bid_volume,
+              ask_price = excluded.ask_price,
+              ask_volume = excluded.ask_volume,
+              trade_status = excluded.trade_status,
               last_attempt_at = excluded.last_attempt_at,
               last_success_at = excluded.last_success_at,
               fetch_status = 'ok',
@@ -1881,13 +2009,14 @@ def refresh_quotes(
         )
     set_meta(con, "last_realtime_quotes_refresh_at", completed_at)
     set_meta(con, "last_realtime_quotes_completed_at", completed_at)
-    if not remaining:
+    outstanding_missing = quote_fetch_missing_secids(con)
+    if not outstanding_missing:
         set_meta(con, "last_realtime_quotes_refresh_success_at", completed_at)
     elif saved:
         set_meta(con, "last_realtime_quotes_partial_at", completed_at)
     else:
         set_meta(con, "last_realtime_quotes_failed_at", completed_at)
-    set_meta(con, "last_realtime_quotes_fetch_missing_secids", remaining)
+    set_meta(con, "last_realtime_quotes_fetch_missing_secids", outstanding_missing)
     sorted_diagnostics = sorted(
         source_diagnostics,
         key=lambda item: (

@@ -519,6 +519,12 @@ th {
   font-size: 10px;
 }
 
+.column-header-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .sort-button[data-sort-direction="asc"]::after {
   content: "▲";
 }
@@ -672,13 +678,25 @@ button:disabled {
 }
 
 .fund-col-nav,
-.fund-col-price,
 .fund-col-estimate,
 .fund-col-premium,
 .fund-col-covered,
 .fund-col-backtest,
 .fund-col-backtest-vol {
   width: 7%;
+}
+
+.fund-col-price,
+.fund-col-book-premium {
+  width: 8.5%;
+}
+
+.fund-col-book {
+  width: 13%;
+}
+
+.fund-col-smart-premium {
+  width: 11%;
 }
 
 .fund-col-note {
@@ -734,6 +752,11 @@ button:disabled {
   text-decoration: underline;
   text-decoration-color: rgba(33, 105, 190, 0.35);
   text-underline-offset: 3px;
+}
+
+.order-book {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .quote-price-link:hover {
